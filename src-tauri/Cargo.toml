@@ -1,0 +1,35 @@
+[package]
+name = "paseboard"
+version = "0.1.0"
+description = "跨平台局域网粘贴板同步工具"
+authors = ["PaseBoard Team"]
+license = ""
+repository = ""
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "1.5.4", features = [] }
+
+[dependencies]
+tauri = { version = "1.5.4", features = ["clipboard-all", "system-tray", "shell-open"] }
+serde = { version = "1.0.193", features = ["derive"] }
+serde_json = "1.0.108"
+tokio = { version = "1.35.0", features = ["full"] }
+tokio-tungstenite = "0.21.0"
+mdns-sd = "0.7.5"
+rusqlite = { version = "0.30.0", features = ["bundled"] }
+uuid = { version = "1.6.1", features = ["v4", "serde"] }
+sha2 = "0.10.8"
+thiserror = "1.0.50"
+anyhow = "1.0.75"
+log = "0.4.20"
+env_logger = "0.11.0"
+chrono = { version = "0.4.31", features = ["serde"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[[bin]]
+name = "paseboard"
+path = "src/main.rs"
