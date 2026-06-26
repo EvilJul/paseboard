@@ -559,8 +559,8 @@ pub async fn broadcast_message(&self, message: &Message) -> Result<()> {
 | 集成测试 | `cargo test --test '*'` |
 | 性能基准测试 | `cargo bench` |
 | 安全审计 | `cargo audit` |
-| 打包构建（所有平台） | `cargo tauri build` |
-| 打包构建（当前平台） | `cargo tauri build --target current` |
+| 打包构建（Universal，推荐） | `cargo tauri build --target universal-apple-darwin` |
+| 打包构建（仅当前平台） | `cargo tauri build` |
 
 ---
 

@@ -9,3 +9,4 @@ pub mod config;
 pub mod network;
 pub mod clipboard;
 pub mod utils;
+pub mod app;

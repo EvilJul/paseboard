@@ -10,35 +10,545 @@
             padding: 0;
             box-sizing: border-box;
         }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: #f5f5f5;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #f7f4ef;
+            color: #1f2421;
+            overflow: hidden;
         }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
+
+        .app {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
         }
-        h1 {
-            color: #333;
-            margin-bottom: 20px;
+
+        /* 标签页导航 */
+        .tabs {
+            background: #fbf9f5;
+            border-bottom: 1px solid #e7e1d7;
+            display: flex;
+            padding: 0 20px;
         }
-        .placeholder {
-            background: white;
+
+        .tab-btn {
+            padding: 16px 24px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-size: 15px;
+            font-weight: 500;
+            color: #5c635d;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s ease;
+        }
+
+        .tab-btn:hover {
+            color: #1f2421;
+        }
+
+        .tab-btn.active {
+            color: #c4612f;
+            border-bottom-color: #c4612f;
+        }
+
+        /* 标签页内容 */
+        .tab-content {
+            flex: 1;
+            overflow: auto;
+            padding: 24px;
+        }
+
+        .tab-pane {
+            display: none;
+        }
+
+        .tab-pane.active {
+            display: block;
+        }
+
+        /* 表格样式 */
+        .table-container {
+            background: #ffffff;
             border-radius: 8px;
-            padding: 40px;
+            border: 1px solid #e7e1d7;
+            overflow: hidden;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            background: #fbf9f5;
+            padding: 14px 20px;
+            text-align: left;
+            font-size: 13px;
+            font-weight: 600;
+            color: #5c635d;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid #e7e1d7;
+        }
+
+        td {
+            padding: 16px 20px;
+            border-bottom: 1px solid #e7e1d7;
+            font-size: 14px;
+            color: #1f2421;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tbody tr {
+            transition: background-color 0.15s ease;
+        }
+
+        tbody tr:hover {
+            background: #fbf9f5;
+            cursor: pointer;
+        }
+
+        /* 状态指示器 */
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .status-dot.online {
+            background: #22c55e;
+        }
+
+        .status-dot.offline {
+            background: #94a3b8;
+        }
+
+        /* 内容预览截断 */
+        .content-preview {
+            max-width: 400px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* 相对时间 */
+        .relative-time {
+            color: #5c635d;
+            font-size: 13px;
+        }
+
+        /* 空状态 */
+        .empty-state {
             text-align: center;
-            color: #666;
+            padding: 60px 20px;
+            color: #5c635d;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.3;
+        }
+
+        .empty-state-title {
+            font-size: 16px;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: #1f2421;
+        }
+
+        .empty-state-desc {
+            font-size: 14px;
+        }
+
+        /* Toast 通知 */
+        .toast {
+            position: fixed;
+            top: 24px;
+            right: 24px;
+            background: #c4612f;
+            color: #ffffff;
+            padding: 16px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            display: none;
+            align-items: center;
+            gap: 12px;
+            font-size: 14px;
+            font-weight: 500;
+            z-index: 1000;
+            animation: slideIn 0.3s ease;
+        }
+
+        .toast.show {
+            display: flex;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .toast-icon {
+            font-size: 20px;
+        }
+
+        /* 徽章 */
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+            background: #f2e3d6;
+            color: #c4612f;
+        }
+
+        /* 加载状态 */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #5c635d;
+        }
+
+        .spinner {
+            border: 3px solid #e7e1d7;
+            border-top: 3px solid #c4612f;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>PaseBoard</h1>
-        <div class="placeholder">
-            <p>欢迎使用 PaseBoard - 跨平台局域网粘贴板同步工具</p>
-            <p style="margin-top: 10px; font-size: 14px;">界面开发中...</p>
+    <div class="app">
+        <!-- 标签页导航 -->
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="devices">设备列表</button>
+            <button class="tab-btn" data-tab="history">历史记录</button>
+        </div>
+
+        <!-- 标签页内容 -->
+        <div class="tab-content">
+            <!-- 设备列表 -->
+            <div id="devices" class="tab-pane active">
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>设备名称</th>
+                                <th>状态</th>
+                                <th>IP 地址</th>
+                                <th>端口</th>
+                            </tr>
+                        </thead>
+                        <tbody id="devices-tbody">
+                            <tr>
+                                <td colspan="4">
+                                    <div class="loading">
+                                        <div class="spinner"></div>
+                                        <div>加载设备列表中...</div>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 历史记录 -->
+            <div id="history" class="tab-pane">
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>内容预览</th>
+                                <th>来源设备</th>
+                                <th>时间</th>
+                                <th>大小</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-tbody">
+                            <tr>
+                                <td colspan="4">
+                                    <div class="loading">
+                                        <div class="spinner"></div>
+                                        <div>加载历史记录中...</div>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
+
+    <!-- Toast 通知 -->
+    <div id="toast" class="toast">
+        <span class="toast-icon">⚠️</span>
+        <span id="toast-message"></span>
+    </div>
+
+    <script>
+        const { invoke } = window.__TAURI__.tauri;
+        const { writeText } = window.__TAURI__.clipboard;
+
+        // 标签页切换
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                // 更新按钮状态
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+
+                // 更新内容显示
+                const tabId = btn.getAttribute('data-tab');
+                document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('active'));
+                document.getElementById(tabId).classList.add('active');
+
+                // 刷新对应数据
+                if (tabId === 'devices') {
+                    loadDevices();
+                } else if (tabId === 'history') {
+                    loadHistory();
+                }
+            });
+        });
+
+        // 显示 Toast 通知
+        function showToast(message, duration = 3000) {
+            const toast = document.getElementById('toast');
+            const messageEl = document.getElementById('toast-message');
+            messageEl.textContent = message;
+            toast.classList.add('show');
+
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, duration);
+        }
+
+        // 格式化相对时间
+        function formatRelativeTime(timestamp) {
+            const now = Math.floor(Date.now() / 1000);
+            const diff = now - timestamp;
+
+            if (diff < 60) {
+                return '刚刚';
+            } else if (diff < 3600) {
+                const minutes = Math.floor(diff / 60);
+                return `${minutes} 分钟前`;
+            } else if (diff < 86400) {
+                const hours = Math.floor(diff / 3600);
+                return `${hours} 小时前`;
+            } else if (diff < 604800) {
+                const days = Math.floor(diff / 86400);
+                return `${days} 天前`;
+            } else {
+                const date = new Date(timestamp * 1000);
+                return date.toLocaleDateString('zh-CN');
+            }
+        }
+
+        // 格式化文件大小
+        function formatSize(bytes) {
+            if (bytes < 1024) {
+                return `${bytes} B`;
+            } else if (bytes < 1024 * 1024) {
+                return `${(bytes / 1024).toFixed(1)} KB`;
+            } else {
+                return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+            }
+        }
+
+        // 截断内容预览
+        function truncateContent(content, maxLength = 100) {
+            if (content.length <= maxLength) {
+                return content;
+            }
+            return content.substring(0, maxLength) + '...';
+        }
+
+        // 加载设备列表
+        async function loadDevices() {
+            const tbody = document.getElementById('devices-tbody');
+
+            try {
+                const devices = await invoke('get_devices');
+
+                if (devices.length === 0) {
+                    tbody.innerHTML = `
+                        <tr>
+                            <td colspan="4">
+                                <div class="empty-state">
+                                    <div class="empty-state-icon">📡</div>
+                                    <div class="empty-state-title">未发现设备</div>
+                                    <div class="empty-state-desc">局域网内暂时没有其他 PaseBoard 设备</div>
+                                </div>
+                            </td>
+                        </tr>
+                    `;
+                    return;
+                }
+
+                tbody.innerHTML = devices.map(device => `
+                    <tr>
+                        <td>${device.name}</td>
+                        <td>
+                            <div class="status-indicator">
+                                <span class="status-dot ${device.is_online ? 'online' : 'offline'}"></span>
+                                <span>${device.is_online ? '在线' : '离线'}</span>
+                            </div>
+                        </td>
+                        <td>${device.addr}</td>
+                        <td>${device.port}</td>
+                    </tr>
+                `).join('');
+            } catch (error) {
+                console.error('加载设备列表失败:', error);
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="4">
+                            <div class="empty-state">
+                                <div class="empty-state-icon">❌</div>
+                                <div class="empty-state-title">加载失败</div>
+                                <div class="empty-state-desc">${error}</div>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }
+        }
+
+        // 加载历史记录
+        async function loadHistory() {
+            const tbody = document.getElementById('history-tbody');
+
+            try {
+                const history = await invoke('get_history');
+
+                if (history.length === 0) {
+                    tbody.innerHTML = `
+                        <tr>
+                            <td colspan="4">
+                                <div class="empty-state">
+                                    <div class="empty-state-icon">📋</div>
+                                    <div class="empty-state-title">暂无历史记录</div>
+                                    <div class="empty-state-desc">开始使用 PaseBoard 后会在这里显示同步历史</div>
+                                </div>
+                            </td>
+                        </tr>
+                    `;
+                    return;
+                }
+
+                tbody.innerHTML = history.map(item => {
+                    const preview = truncateContent(item.content);
+                    const relativeTime = formatRelativeTime(item.timestamp);
+                    const size = formatSize(item.size);
+
+                    // 检查内容是否超过 10MB
+                    const isLarge = item.size > 10 * 1024 * 1024;
+
+                    return `
+                        <tr data-content="${escapeHtml(item.content)}" onclick="copyToClipboard(this)">
+                            <td>
+                                <div class="content-preview">${escapeHtml(preview)}</div>
+                            </td>
+                            <td>${escapeHtml(item.device_name)}</td>
+                            <td>
+                                <span class="relative-time">${relativeTime}</span>
+                            </td>
+                            <td>
+                                ${isLarge ? '<span class="badge">超大</span> ' : ''}
+                                ${size}
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            } catch (error) {
+                console.error('加载历史记录失败:', error);
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="4">
+                            <div class="empty-state">
+                                <div class="empty-state-icon">❌</div>
+                                <div class="empty-state-title">加载失败</div>
+                                <div class="empty-state-desc">${error}</div>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }
+        }
+
+        // 点击历史记录复制到粘贴板
+        async function copyToClipboard(row) {
+            const content = row.getAttribute('data-content');
+            if (!content) return;
+
+            try {
+                await writeText(content);
+
+                // 检查内容大小，超过 10MB 显示警告
+                const size = new Blob([content]).size;
+                if (size > 10 * 1024 * 1024) {
+                    showToast('内容超过 10MB，不同步');
+                } else {
+                    // 简单的视觉反馈
+                    row.style.background = '#f2e3d6';
+                    setTimeout(() => {
+                        row.style.background = '';
+                    }, 300);
+                }
+            } catch (error) {
+                console.error('复制失败:', error);
+                showToast('复制失败: ' + error);
+            }
+        }
+
+        // 转义 HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // 定时刷新数据
+        setInterval(() => {
+            const activeTab = document.querySelector('.tab-btn.active').getAttribute('data-tab');
+            if (activeTab === 'devices') {
+                loadDevices();
+            } else if (activeTab === 'history') {
+                loadHistory();
+            }
+        }, 5000);
+
+        // 初始加载
+        loadDevices();
+    </script>
 </body>
 </html>

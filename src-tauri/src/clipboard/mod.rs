@@ -5,8 +5,15 @@
 // - 粘贴板内容写入
 // - 历史记录存储（SQLite）
 // - 内容去重（SHA256 哈希）
+// - 消息去重服务（UUID + 内容哈希）
 
-// 后续将在此模块中实现：
-// - monitor.rs: 粘贴板监听器（500ms 轮询）
-// - writer.rs: 粘贴板写入
-// - storage.rs: SQLite 历史记录存储
+pub mod monitor;
+pub mod writer;
+pub mod storage;
+pub mod dedup;
+
+// 重新导出主要类型
+pub use monitor::{ClipboardMonitor, ClipboardChange};
+pub use writer::ClipboardWriter;
+pub use storage::{HistoryStorage, HistoryItem};
+pub use dedup::DeduplicationService;

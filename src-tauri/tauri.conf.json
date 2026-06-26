@@ -1,55 +1,59 @@
 {
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PaseBoard",
+  "version": "0.1.0",
+  "identifier": "com.paseboard.app",
   "build": {
-    "beforeDevCommand": "",
-    "beforeBuildCommand": "",
-    "devPath": "../ui",
-    "distDir": "../ui",
-    "withGlobalTauri": false
+    "frontendDist": "../ui"
   },
-  "package": {
-    "productName": "PaseBoard",
-    "version": "0.1.0"
-  },
-  "tauri": {
-    "allowlist": {
-      "all": false,
-      "clipboard": {
-        "all": true,
-        "readText": true,
-        "writeText": true
-      },
-      "shell": {
-        "all": false,
-        "open": true
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "dmg", "deb", "rpm", "appimage"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [],
+    "copyright": "Copyright (c) 2026 PaseBoard",
+    "category": "Utility",
+    "shortDescription": "零配置局域网粘贴板同步工具",
+    "longDescription": "PaseBoard 是一个零配置的局域网粘贴板同步工具，支持自动设备发现、实时同步和历史记录管理。",
+    "linux": {
+      "deb": {
+        "depends": ["avahi-daemon"]
       }
     },
-    "bundle": {
-      "active": true,
-      "targets": "all",
-      "identifier": "com.paseboard.app",
-      "icon": [
-        "icons/32x32.png",
-        "icons/128x128.png",
-        "icons/128x128@2x.png",
-        "icons/icon.icns",
-        "icons/icon.ico"
-      ]
+    "macOS": {
+      "frameworks": [],
+      "minimumSystemVersion": "10.15"
     },
-    "security": {
-      "csp": null
-    },
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
+    }
+  },
+  "app": {
     "windows": [
       {
         "fullscreen": false,
         "resizable": true,
         "title": "PaseBoard",
-        "width": 800,
-        "height": 600
+        "width": 900,
+        "height": 650,
+        "center": true,
+        "visible": true
       }
     ],
-    "systemTray": {
+    "security": {
+      "csp": null
+    },
+    "trayIcon": {
       "iconPath": "icons/icon.png",
       "iconAsTemplate": true
     }
-  }
+  },
+  "plugins": {}
 }
