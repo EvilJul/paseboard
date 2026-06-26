@@ -45,18 +45,27 @@ pub struct WebSocketServer {
 }
 
 impl WebSocketServer {
-    /// 创建 WebSocket 服务端
+    /// 创建 WebSocket 服务端（同步方法，**立即绑定端口**，失败时返回错误）
     ///
     /// # 参数
     /// - `bind_addr`: 监听地址（如 "0.0.0.0:9527"）
     /// - `device_id`: 本设备 ID
     ///
     /// # 返回
-    /// - `(WebSocketServer, mpsc::UnboundedReceiver<Message>)`: 服务端实例和消息接收通道
+    /// - `Ok((WebSocketServer, mpsc::UnboundedReceiver<Message>))`: 服务端实例和消息接收通道
+    /// - `Err(NetworkError)`: 端口绑定失败
     pub fn new(
         bind_addr: String,
         device_id: String,
-    ) -> (Self, mpsc::UnboundedReceiver<Message>) {
+    ) -> Result<(Self, mpsc::UnboundedReceiver<Message>), NetworkError> {
+        // 同步预绑定端口，确保 mDNS 注册时端口一定可用
+        std::net::TcpListener::bind(&bind_addr).map_err(|e| {
+            NetworkError::ConnectionFailed(format!(
+                "WebSocket 预绑定 {} 失败: {}",
+                bind_addr, e
+            ))
+        })?;
+
         let (message_tx, message_rx) = mpsc::unbounded_channel();
 
         let server = Self {
@@ -66,12 +75,12 @@ impl WebSocketServer {
             message_tx,
         };
 
-        (server, message_rx)
+        Ok((server, message_rx))
     }
 
     /// 启动服务端（阻塞当前任务）
     pub async fn run(&self) -> Result<(), NetworkError> {
-        // 绑定监听地址
+        // 绑定监听地址（端口在 new() 中已预绑定，这里再次绑定成功即可）
         let listener = TcpListener::bind(&self.bind_addr)
             .await
             .map_err(|e| NetworkError::ConnectionFailed(format!("绑定失败: {}", e)))?;
@@ -287,7 +296,8 @@ mod tests {
         let (server, _rx) = WebSocketServer::new(
             "127.0.0.1:9527".to_string(),
             "test-device".to_string(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(server.bind_addr, "127.0.0.1:9527");
         assert_eq!(server.device_id, "test-device");
@@ -299,7 +309,8 @@ mod tests {
         let (server, _rx) = WebSocketServer::new(
             "127.0.0.1:9528".to_string(),
             "test-device".to_string(),
-        );
+        )
+        .unwrap();
 
         let msg = Message::new_clipboard("Test".to_string(), "device-1".to_string());
         let result = server.broadcast(&msg).await;

@@ -18,7 +18,8 @@ mod integration_tests {
         let (server, _server_rx) = WebSocketServer::new(
             "127.0.0.1:19527".to_string(),
             "server-device".to_string(),
-        );
+        )
+        .unwrap();
 
         tokio::spawn(async move {
             let _ = server.run().await;
@@ -51,7 +52,8 @@ mod integration_tests {
         let (server, mut server_rx) = WebSocketServer::new(
             "127.0.0.1:19528".to_string(),
             "server-device".to_string(),
-        );
+        )
+        .unwrap();
 
         tokio::spawn(async move {
             let _ = server.run().await;
@@ -97,7 +99,8 @@ mod integration_tests {
         let (server, _server_rx) = WebSocketServer::new(
             "127.0.0.1:19529".to_string(),
             "server-device".to_string(),
-        );
+        )
+        .unwrap();
 
         let server_clone = std::sync::Arc::new(server);
         let server_for_run = server_clone.clone();
@@ -146,7 +149,8 @@ mod integration_tests {
         let (server, _server_rx) = WebSocketServer::new(
             "127.0.0.1:19530".to_string(),
             "server-device".to_string(),
-        );
+        )
+        .unwrap();
 
         tokio::spawn(async move {
             let _ = server.run().await;
@@ -192,7 +196,8 @@ mod integration_tests {
         let (server, _server_rx) = WebSocketServer::new(
             "127.0.0.1:19532".to_string(),
             "server-device".to_string(),
-        );
+        )
+        .unwrap();
 
         let server = std::sync::Arc::new(server);
         let server_for_run = server.clone();

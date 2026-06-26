@@ -14,7 +14,7 @@ use crate::network::websocket_client::WebSocketClient;
 use crate::network::message::Message;
 use crate::clipboard::monitor::{ClipboardMonitor, ClipboardChange};
 use crate::clipboard::writer::ClipboardWriter;
-use crate::clipboard::storage::HistoryStorage;
+use crate::clipboard::storage::{HistoryStorage, HistoryItem};
 use crate::clipboard::dedup::DeduplicationService;
 
 use log::{info, warn, error, debug};
@@ -23,12 +23,51 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use sha2::{Sha256, Digest};
 
+/// 设备信息快照（用于 IPC 返回，字段名与前端期望一致）
+#[derive(Debug, Clone)]
+pub struct DeviceSnapshot {
+    pub id: String,
+    pub name: String,
+    pub addr: String,
+    pub port: u16,
+    pub last_seen: u64,
+}
+
+impl DeviceSnapshot {
+    pub fn is_offline(&self) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // 与 mdns.rs 保持一致的 30 秒超时
+        now.saturating_sub(self.last_seen) > 30
+    }
+}
+
+impl From<DeviceInfo> for DeviceSnapshot {
+    fn from(d: DeviceInfo) -> Self {
+        Self {
+            id: d.id,
+            name: d.name,
+            addr: d.addr.to_string(),
+            port: d.port,
+            last_seen: d.last_seen,
+        }
+    }
+}
+
 /// 历史记录存储请求
 #[derive(Debug, Clone)]
 struct StorageRequest {
     content: String,
     device_id: String,
     device_name: String,
+}
+
+/// 历史记录查询请求（带 oneshot 回复通道）
+pub struct StorageQuery {
+    pub limit: usize,
+    pub reply: tokio::sync::oneshot::Sender<anyhow::Result<Vec<crate::clipboard::storage::HistoryItem>>>,
 }
 
 /// 应用主协调器
@@ -49,10 +88,20 @@ pub struct App {
     clipboard_writer: Arc<ClipboardWriter>,
     /// 历史存储请求发送通道
     storage_tx: mpsc::UnboundedSender<StorageRequest>,
+    /// 历史存储查询发送通道
+    storage_query_tx: mpsc::UnboundedSender<StorageQuery>,
     /// 去重服务
     dedup_service: Arc<DeduplicationService>,
     /// 已连接的客户端（设备 ID -> WebSocketClient）
     clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
+}
+
+/// 应用对外暴露给 IPC 命令使用的句柄（轻量、Send + Sync）
+pub struct IpcHandles {
+    /// mDNS 服务（用于查询发现的设备列表）
+    pub mdns: Arc<MdnsService>,
+    /// 历史存储查询通道
+    pub storage_query_tx: mpsc::UnboundedSender<StorageQuery>,
 }
 
 impl App {
@@ -71,8 +120,9 @@ impl App {
         let mdns_handle = {
             let device_id = config.device_id.clone();
             let device_name = config.device_name.clone();
+            let port = config.port;
             tokio::spawn(async move {
-                MdnsService::new(device_id, device_name)
+                MdnsService::new(device_id, device_name, port)
             })
         };
 
@@ -93,7 +143,7 @@ impl App {
 
         // 等待并行初始化完成
         let mdns = mdns_handle.await??;
-        let (ws_server, ws_server_rx) = ws_server_handle.await?;
+        let (ws_server, ws_server_rx) = ws_server_handle.await??;
         let history_storage = storage_handle.await??;
 
         info!("mDNS、WebSocket Server、Storage 并行初始化完成");
@@ -111,12 +161,14 @@ impl App {
 
         // 创建存储请求通道
         let (storage_tx, storage_rx) = mpsc::unbounded_channel();
+        // 创建存储查询通道
+        let (storage_query_tx, storage_query_rx) = mpsc::unbounded_channel::<StorageQuery>();
 
         // 启动存储处理任务（在独立线程中，因为 rusqlite 不是 Send）
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("创建存储任务运行时失败");
             rt.block_on(async move {
-                Self::handle_storage_requests(history_storage, storage_rx).await;
+                Self::handle_storage_requests(history_storage, storage_rx, storage_query_rx).await;
             });
         });
 
@@ -131,21 +183,34 @@ impl App {
             clipboard_rx: Arc::new(RwLock::new(clipboard_rx)),
             clipboard_writer: Arc::new(clipboard_writer),
             storage_tx,
+            storage_query_tx,
             dedup_service: Arc::new(dedup_service),
             clients: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
-    /// 处理存储请求（在独立线程中运行）
+    /// 处理存储请求和查询（在独立线程中运行）
     async fn handle_storage_requests(
         mut storage: HistoryStorage,
         mut storage_rx: mpsc::UnboundedReceiver<StorageRequest>,
+        mut storage_query_rx: mpsc::UnboundedReceiver<StorageQuery>,
     ) {
         info!("存储处理任务已启动");
 
-        while let Some(req) = storage_rx.recv().await {
-            if let Err(e) = storage.insert(&req.content, &req.device_id, &req.device_name) {
-                error!("保存历史记录失败: {}", e);
+        loop {
+            tokio::select! {
+                Some(req) = storage_rx.recv() => {
+                    if let Err(e) = storage.insert(&req.content, &req.device_id, &req.device_name) {
+                        error!("保存历史记录失败: {}", e);
+                    }
+                }
+                Some(query) = storage_query_rx.recv() => {
+                    let result = storage
+                        .query_recent(query.limit)
+                        .map_err(|e| anyhow::anyhow!("查询历史记录失败: {}", e));
+                    let _ = query.reply.send(result);
+                }
+                else => break,
             }
         }
     }
@@ -164,6 +229,7 @@ impl App {
             clipboard_rx,
             clipboard_writer,
             storage_tx,
+            storage_query_tx: _, // 已在 Self 中持有，无须再传递
             dedup_service,
             clients,
         } = self;
@@ -514,15 +580,30 @@ impl App {
         format!("{:x}", hasher.finalize())
     }
 
-    /// 获取已连接的设备列表
-    pub async fn get_connected_devices(&self) -> Vec<DeviceInfo> {
-        self.mdns.get_devices()
+    /// 构造 IPC 命令需要的句柄（在 run() 之前调用，提取共享引用）
+    pub fn ipc_handles(&self) -> IpcHandles {
+        IpcHandles {
+            mdns: Arc::clone(&self.mdns),
+            storage_query_tx: self.storage_query_tx.clone(),
+        }
     }
 
-    /// 获取最近的历史记录
-    pub async fn get_recent_history(&self, limit: usize) -> anyhow::Result<Vec<crate::clipboard::storage::HistoryItem>> {
-        // 由于历史记录在独立的任务中处理，我们需要通过 storage 获取
-        // 这里暂时返回空列表，需要重构 storage 访问
-        Ok(vec![])
+    /// 获取当前已发现设备列表快照（供 IPC 使用）
+    pub async fn get_devices_snapshot(&self) -> Vec<DeviceSnapshot> {
+        self.mdns
+            .get_devices()
+            .into_iter()
+            .map(DeviceSnapshot::from)
+            .collect()
+    }
+
+    /// 获取最近的历史记录（供 IPC 使用，跨线程走 storage_query_tx 通道）
+    pub async fn get_recent_history(&self, limit: usize) -> anyhow::Result<Vec<HistoryItem>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.storage_query_tx
+            .send(StorageQuery { limit, reply: tx })
+            .map_err(|_| anyhow::anyhow!("存储查询通道已关闭"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("存储查询响应失败"))?
     }
 }

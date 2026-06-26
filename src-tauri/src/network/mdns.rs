@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mdns_sd::{ServiceDaemon, ServiceInfo};
-use uuid::Uuid;
 
 use crate::utils::error::NetworkError;
 
@@ -66,30 +65,31 @@ pub struct MdnsService {
 }
 
 impl MdnsService {
-    /// 创建 mDNS 服务（尝试端口 9527-9537）
+    /// 创建 mDNS 服务
     ///
-    /// 返回：
-    /// - Ok(MdnsService): 成功创建服务
-    /// - Err(NetworkError): 所有端口都被占用或 mDNS 初始化失败
-    pub fn new(device_id: String, device_name: String) -> Result<Self, NetworkError> {
+    /// # 参数
+    /// - `device_id` / `device_name`：设备标识
+    /// - `bind_port`：mDNS 广播时使用的端口。必须与 WebSocketServer 实际监听的端口一致，
+    ///                否则远端按 mDNS 通告的端口连接会被拒绝。
+    ///
+    /// # 返回
+    /// - `Ok(MdnsService)`: 成功创建服务
+    /// - `Err(NetworkError)`: mDNS 初始化失败
+    pub fn new(
+        device_id: String,
+        device_name: String,
+        bind_port: u16,
+    ) -> Result<Self, NetworkError> {
         // 初始化 mDNS 守护进程
         let daemon = ServiceDaemon::new().map_err(|e| {
             NetworkError::ConnectionFailed(format!("mDNS 初始化失败: {}", e))
-        })?;
-
-        // 尝试端口范围内的第一个可用端口
-        let port = Self::find_available_port().ok_or_else(|| {
-            NetworkError::ConnectionFailed(format!(
-                "端口范围 {}-{} 内无可用端口",
-                PORT_RANGE_START, PORT_RANGE_END
-            ))
         })?;
 
         Ok(Self {
             daemon,
             device_id,
             device_name,
-            port,
+            port: bind_port,
             devices: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -115,7 +115,7 @@ impl MdnsService {
         log::debug!("设备 ID: {}", self.device_id);
         log::debug!("设备名称: {}", self.device_name);
         log::debug!("端口: {}", self.port);
-        
+
         // 构建服务名称：设备名称.服务类型
         let service_name = format!("{}.{}", self.device_name, SERVICE_TYPE);
         log::debug!("完整服务名: {}", service_name);
@@ -123,21 +123,24 @@ impl MdnsService {
         // 创建 TXT 记录：设备 ID
         let properties = [("device_id", self.device_id.as_str())];
 
+        // 主动检测本机在局域网接口上的 IP（不使用 enable_addr_auto()，
+        // 因为 mdns-sd 0.7.5 的自动检测在 macOS 多网卡环境下经常选错接口）
+        let host_ipv4 = Self::detect_local_ipv4().unwrap_or_default();
+        log::debug!("自动检测到的 host IPv4: {}", host_ipv4);
+
         // 创建服务信息
-        // 使用 enable_addr_auto() 让 mdns-sd 自动检测 IP 地址
         let service_info = ServiceInfo::new(
             SERVICE_TYPE,
             &self.device_name,
             &self.device_name,  // hostname 使用设备名称
-            "",                 // host_ipv4，留空
+            &host_ipv4,         // host_ipv4（主动检测，避免自动选错）
             self.port,
             &properties[..],
         )
         .map_err(|e| {
             log::error!("创建 mDNS 服务信息失败: {}", e);
             NetworkError::ConnectionFailed(format!("创建 mDNS 服务信息失败: {}", e))
-        })?
-        .enable_addr_auto();  // 链式调用启用自动地址检测
+        })?;
 
         // 注册服务
         self.daemon.register(service_info).map_err(|e| {
@@ -147,6 +150,20 @@ impl MdnsService {
 
         log::info!("✓ mDNS 服务注册成功: {} 端口 {}", self.device_name, self.port);
         Ok(())
+    }
+
+    /// 通过 UDP socket connect 到公网地址（不发包）的方式，
+    /// 让操作系统选择本机在局域网接口上的 IPv4。
+    /// 该方法不依赖任何第三方 crate。
+    fn detect_local_ipv4() -> Option<String> {
+        // 连接到 8.8.8.8:80 不会真的发包，仅让 OS 选出本机出口 IP
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        socket.connect("8.8.8.8:80").ok()?;
+        let addr = socket.local_addr().ok()?;
+        match addr.ip() {
+            std::net::IpAddr::V4(v4) => Some(v4.to_string()),
+            std::net::IpAddr::V6(_) => None,
+        }
     }
 
     /// 开始监听 mDNS 广播（阻塞调用）
@@ -284,6 +301,7 @@ impl MdnsService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     #[test]
     fn test_port_availability() {
@@ -328,7 +346,7 @@ mod tests {
         let device_id = Uuid::new_v4().to_string();
         let device_name = "Test Device".to_string();
 
-        let result = MdnsService::new(device_id.clone(), device_name.clone());
+        let result = MdnsService::new(device_id.clone(), device_name.clone(), 9527);
 
         // 根据系统 mDNS 可用性判断结果
         match result {
@@ -350,7 +368,7 @@ mod tests {
         let device_id = Uuid::new_v4().to_string();
         let device_name = "Test Device".to_string();
 
-        if let Ok(service) = MdnsService::new(device_id.clone(), device_name.clone()) {
+        if let Ok(service) = MdnsService::new(device_id.clone(), device_name.clone(), 9528) {
             // 初始设备列表为空
             assert_eq!(service.get_devices().len(), 0);
 
@@ -392,7 +410,7 @@ mod tests {
         let device_id = Uuid::new_v4().to_string();
         let device_name = "Test Device".to_string();
 
-        if let Ok(service) = MdnsService::new(device_id, device_name) {
+        if let Ok(service) = MdnsService::new(device_id, device_name, 9529) {
             // 尝试注册服务（可能因系统限制失败）
             let result = service.register();
 
