@@ -16,6 +16,7 @@ serde = { version = "1.0.193", features = ["derive"] }
 serde_json = "1.0.108"
 tokio = { version = "1.35.0", features = ["full"] }
 tokio-tungstenite = "0.21.0"
+futures-util = "0.3.30"
 mdns-sd = "0.7.5"
 rusqlite = { version = "0.30.0", features = ["bundled"] }
 uuid = { version = "1.6.1", features = ["v4", "serde"] }
@@ -25,10 +26,17 @@ anyhow = "1.0.75"
 log = "0.4.20"
 env_logger = "0.11.0"
 chrono = { version = "0.4.31", features = ["serde"] }
+toml = "0.8.8"
+dirs = "5.0.1"
+hostname = "0.3.1"
 
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+[lib]
+name = "paseboard"
+path = "src/lib.rs"
 
 [[bin]]
 name = "paseboard"

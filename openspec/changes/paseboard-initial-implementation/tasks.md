@@ -1,36 +1,36 @@
 ## 1. 项目初始化
 
-- [ ] 1.1 创建 Tauri 项目结构（`cargo tauri init`）
-- [ ] 1.2 配置 Cargo.toml 依赖（tokio, tokio-tungstenite, mdns-sd, rusqlite, serde, serde_json, tauri-plugin-clipboard）
-- [ ] 1.3 创建模块目录结构（src/network/, src/clipboard/, src/utils/）
-- [ ] 1.4 创建配置管理模块（src/config.rs）
+- [x] 1.1 创建 Tauri 项目结构（`cargo tauri init`）
+- [x] 1.2 配置 Cargo.toml 依赖（tokio, tokio-tungstenite, mdns-sd, rusqlite, serde, serde_json, tauri-plugin-clipboard）
+- [x] 1.3 创建模块目录结构（src/network/, src/clipboard/, src/utils/）
+- [x] 1.4 创建配置管理模块（src/config.rs）
 
 ## 2. 错误处理与日志
 
-- [ ] 2.1 定义核心错误类型（utils/error.rs: NetworkError, ClipboardError, StorageError）
-- [ ] 2.2 配置日志框架（log + env_logger）
-- [ ] 2.3 实现错误上下文传播（使用 thiserror 和 anyhow）
+- [x] 2.1 定义核心错误类型（utils/error.rs: NetworkError, ClipboardError, StorageError）
+- [x] 2.2 配置日志框架（log + env_logger）
+- [x] 2.3 实现错误上下文传播（使用 thiserror 和 anyhow）
 
 ## 3. 设备发现（device-discovery）
 
-- [ ] 3.1 实现 mDNS 服务注册（network/mdns.rs: 服务类型 _paseboard._tcp.local）
-- [ ] 3.2 实现端口冲突自动降级（9527 → 9528 → ... → 9537）
-- [ ] 3.3 实现设备信息广播（设备 ID、设备名称、实际端口）
-- [ ] 3.4 实现 mDNS 设备监听与解析
-- [ ] 3.5 实现设备列表管理（新增、更新、移除设备）
-- [ ] 3.6 添加设备发现单元测试
+- [x] 3.1 实现 mDNS 服务注册（network/mdns.rs: 服务类型 _paseboard._tcp.local）
+- [x] 3.2 实现端口冲突自动降级（9527 → 9528 → ... → 9537）
+- [x] 3.3 实现设备信息广播（设备 ID、设备名称、实际端口）
+- [x] 3.4 实现 mDNS 设备监听与解析
+- [x] 3.5 实现设备列表管理（新增、更新、移除设备）
+- [x] 3.6 添加设备发现单元测试
 
 ## 4. WebSocket 通信（realtime-sync）
 
-- [ ] 4.1 实现 WebSocket 服务端（network/websocket_server.rs）
-- [ ] 4.2 实现 WebSocket 客户端（network/websocket_client.rs）
-- [ ] 4.3 定义消息协议（network/message.rs: Message 结构体，JSON 序列化）
-- [ ] 4.4 实现消息编解码共享逻辑（network/websocket_common.rs）
-- [ ] 4.5 实现心跳检测机制（30 秒间隔，60 秒超时）
-- [ ] 4.6 实现断线重连机制（指数退避，最多 3 次）
-- [ ] 4.7 实现内容大小限制检查（10MB 上限）
-- [ ] 4.8 实现消息广播优化（序列化一次 + 并发发送）
-- [ ] 4.9 添加 WebSocket 单元测试和集成测试
+- [x] 4.1 实现 WebSocket 服务端（network/websocket_server.rs）
+- [x] 4.2 实现 WebSocket 客户端（network/websocket_client.rs）
+- [x] 4.3 定义消息协议（network/message.rs: Message 结构体，JSON 序列化）
+- [x] 4.4 实现消息编解码共享逻辑（network/websocket_common.rs）
+- [x] 4.5 实现心跳检测机制（30 秒间隔，60 秒超时）
+- [x] 4.6 实现断线重连机制（指数退避，最多 3 次）
+- [x] 4.7 实现内容大小限制检查（10MB 上限）
+- [x] 4.8 实现消息广播优化（序列化一次 + 并发发送）
+- [x] 4.9 添加 WebSocket 单元测试和集成测试
 
 ## 5. 粘贴板监听与写入（clipboard-monitoring）
 
