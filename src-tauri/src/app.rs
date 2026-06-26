@@ -176,9 +176,9 @@ impl App {
             }
         });
 
-        // 启动 mDNS 监听（独立任务）
+        // 启动 mDNS 监听（使用 spawn_blocking 因为 listen() 是阻塞调用）
         let mdns_for_listen = Arc::clone(&mdns);
-        tokio::spawn(async move {
+        std::thread::spawn(move || {
             if let Err(e) = mdns_for_listen.listen() {
                 error!("mDNS 监听失败: {}", e);
             }
@@ -256,6 +256,7 @@ impl App {
         info!("设备发现流程已启动");
 
         let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        let mut attempted_devices: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         loop {
             ticker.tick().await;
@@ -272,6 +273,14 @@ impl App {
                     }
                 }
 
+                // 跳过已经尝试过的设备（避免重复连接尝试）
+                if attempted_devices.contains(&device.id) {
+                    continue;
+                }
+
+                // 记录尝试过的设备
+                attempted_devices.insert(device.id.clone());
+
                 // 尝试连接到新发现的设备
                 info!("发现新设备: {} ({}:{})", device.name, device.addr, device.port);
                 Self::connect_to_device(
@@ -287,6 +296,10 @@ impl App {
     }
 
     /// 连接到指定设备（静态方法）
+    /// 
+    /// 使用 device_id 比较避免双向连接冲突：
+    /// - 只有 own_device_id < remote_device_id 时才主动连接
+    /// - 否则等待对方连接（通过 WebSocket 服务端接受）
     async fn connect_to_device(
         device: DeviceInfo,
         config: AppConfig,
@@ -295,6 +308,15 @@ impl App {
         clipboard_writer: Arc<ClipboardWriter>,
         storage_tx: mpsc::UnboundedSender<StorageRequest>,
     ) {
+        // 避免双向连接冲突：只有本设备 ID 较小时才主动连接
+        info!("设备 ID 比较: 本设备={}, 远程设备={}, 本设备<远程={}", 
+              config.device_id, device.id, config.device_id < device.id);
+        
+        if config.device_id >= device.id {
+            info!("跳过连接 {}：等待对方连接（本设备 ID 较大）", device.name);
+            return;
+        }
+        
         let server_url = format!("ws://{}:{}", device.addr, device.port);
         let device_id = config.device_id.clone();
 
@@ -490,5 +512,17 @@ impl App {
         let mut hasher = Sha256::new();
         hasher.update(content.as_bytes());
         format!("{:x}", hasher.finalize())
+    }
+
+    /// 获取已连接的设备列表
+    pub async fn get_connected_devices(&self) -> Vec<DeviceInfo> {
+        self.mdns.get_devices()
+    }
+
+    /// 获取最近的历史记录
+    pub async fn get_recent_history(&self, limit: usize) -> anyhow::Result<Vec<crate::clipboard::storage::HistoryItem>> {
+        // 由于历史记录在独立的任务中处理，我们需要通过 storage 获取
+        // 这里暂时返回空列表，需要重构 storage 访问
+        Ok(vec![])
     }
 }

@@ -315,8 +315,8 @@
     </div>
 
     <script>
-        const { invoke } = window.__TAURI__.tauri;
-        const { writeText } = window.__TAURI__.clipboard;
+        // Tauri v2 API
+        const invoke = window.__TAURI_INTERNALS__.invoke;
 
         // 标签页切换
         document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -511,7 +511,8 @@
             if (!content) return;
 
             try {
-                await writeText(content);
+                // 使用 Tauri v2 clipboard API
+                await invoke('plugin:clipboard-manager|write_text', { text: content });
 
                 // 检查内容大小，超过 10MB 显示警告
                 const size = new Blob([content]).size;
@@ -546,6 +547,9 @@
                 loadHistory();
             }
         }, 5000);
+
+        // 导出函数到全局作用域（用于 onclick）
+        window.copyToClipboard = copyToClipboard;
 
         // 初始加载
         loadDevices();

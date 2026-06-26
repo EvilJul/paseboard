@@ -52,10 +52,11 @@ impl AppConfig {
         // 生成设备 UUID
         let device_id = Uuid::new_v4().to_string();
 
-        // 获取计算机名称作为设备名称
+        // 获取计算机名称作为设备名称（去掉 .local 后缀避免重复）
         let device_name = hostname::get()
             .ok()
             .and_then(|name| name.into_string().ok())
+            .map(|name| name.trim_end_matches(".local").to_string())
             .unwrap_or_else(|| "Unknown Device".to_string());
 
         let config = AppConfig {

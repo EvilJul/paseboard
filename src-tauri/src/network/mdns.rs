@@ -111,30 +111,41 @@ impl MdnsService {
 
     /// 注册 mDNS 服务（广播设备信息）
     pub fn register(&self) -> Result<(), NetworkError> {
+        log::info!("准备注册 mDNS 服务...");
+        log::debug!("设备 ID: {}", self.device_id);
+        log::debug!("设备名称: {}", self.device_name);
+        log::debug!("端口: {}", self.port);
+        
         // 构建服务名称：设备名称.服务类型
         let service_name = format!("{}.{}", self.device_name, SERVICE_TYPE);
+        log::debug!("完整服务名: {}", service_name);
 
         // 创建 TXT 记录：设备 ID
         let properties = [("device_id", self.device_id.as_str())];
 
         // 创建服务信息
+        // 使用 enable_addr_auto() 让 mdns-sd 自动检测 IP 地址
         let service_info = ServiceInfo::new(
             SERVICE_TYPE,
             &self.device_name,
-            &service_name,
-            "",                 // hostname 留空，使用默认
+            &self.device_name,  // hostname 使用设备名称
+            "",                 // host_ipv4，留空
             self.port,
             &properties[..],
         )
         .map_err(|e| {
+            log::error!("创建 mDNS 服务信息失败: {}", e);
             NetworkError::ConnectionFailed(format!("创建 mDNS 服务信息失败: {}", e))
-        })?;
+        })?
+        .enable_addr_auto();  // 链式调用启用自动地址检测
 
         // 注册服务
         self.daemon.register(service_info).map_err(|e| {
+            log::error!("注册 mDNS 服务失败: {}", e);
             NetworkError::ConnectionFailed(format!("注册 mDNS 服务失败: {}", e))
         })?;
 
+        log::info!("✓ mDNS 服务注册成功: {} 端口 {}", self.device_name, self.port);
         Ok(())
     }
 
@@ -142,8 +153,11 @@ impl MdnsService {
     ///
     /// 注意：此方法会阻塞当前线程，建议在独立线程或 Tokio 任务中调用
     pub fn listen(&self) -> Result<(), NetworkError> {
+        log::info!("开始监听 mDNS 服务: {}", SERVICE_TYPE);
+        
         // 浏览服务
         let receiver = self.daemon.browse(SERVICE_TYPE).map_err(|e| {
+            log::error!("浏览 mDNS 服务失败: {}", e);
             NetworkError::ConnectionFailed(format!("浏览 mDNS 服务失败: {}", e))
         })?;
 
@@ -152,31 +166,48 @@ impl MdnsService {
 
         // 启动后台任务：监听服务事件
         std::thread::spawn(move || {
+            log::info!("mDNS 监听线程已启动");
+            
             while let Ok(event) = receiver.recv() {
                 match event {
                     mdns_sd::ServiceEvent::ServiceResolved(info) => {
+                        log::debug!("mDNS ServiceResolved: fullname={}, port={}", 
+                            info.get_fullname(), info.get_port());
+                        
                         // 解析设备信息
                         if let Some(device_info) = Self::parse_service_info(&info) {
                             // 跳过自己
                             if device_info.id == own_device_id {
+                                log::debug!("跳过自己的设备: {}", device_info.name);
                                 continue;
                             }
+
+                            log::info!("发现新设备: {} (ID: {}, 地址: {}:{})", 
+                                device_info.name, device_info.id, device_info.addr, device_info.port);
 
                             // 更新设备列表
                             let mut devices = devices.lock().unwrap();
                             devices.insert(device_info.id.clone(), device_info);
+                        } else {
+                            log::warn!("无法解析设备信息，跳过");
                         }
                     }
                     mdns_sd::ServiceEvent::ServiceRemoved(_, full_name) => {
+                        log::info!("设备离线: {}", full_name);
+                        
                         // 设备离线：从列表中移除
                         let mut devices = devices.lock().unwrap();
                         devices.retain(|_, dev| {
                             format!("{}.{}", dev.name, SERVICE_TYPE) != full_name
                         });
                     }
-                    _ => {}
+                    _ => {
+                        log::trace!("mDNS 其他事件: {:?}", event);
+                    }
                 }
             }
+            
+            log::warn!("mDNS 监听线程退出");
         });
 
         // 启动后台任务：定期检测离线设备
