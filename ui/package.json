@@ -1,0 +1,14 @@
+{
+  "name": "paseboard-ui",
+  "version": "0.1.0",
+  "description": "PaseBoard UI",
+  "type": "module",
+  "scripts": {
+    "dev": "echo 'No dev server needed - using static HTML'",
+    "build": "echo 'No build needed - using static HTML'"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-clipboard-manager": "^2.0.0"
+  }
+}

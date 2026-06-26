@@ -8,6 +8,21 @@ src-tauri/icons/
 
 # macOS
 .DS_Store
+**/.DS_Store
+
+# Node
+node_modules/
+package-lock.json
+
+# 临时文件
+*.swp
+*.swo
+*~
+build.log
+
+# Claude Code 工具数据
+.claude/worktrees/
+.codegraph/
 
 # IDE
 .vscode/
@@ -16,8 +31,3 @@ src-tauri/icons/
 # 环境变量
 .env
 .env.local
-
-# 临时文件
-*.swp
-*.swo
-*~
