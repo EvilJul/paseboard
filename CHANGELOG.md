@@ -5,6 +5,12 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.1] - 2026-06-27
+
+### 修复
+
+- **修复 ACL 权限拒绝错误**：点击历史记录的"复制"按钮时不再报错 `plugin:clipboard-manager|write_text not allowed by ACL`。新增 Tauri v2 capability 配置，授权前端调用 clipboard 写入能力。窗口对象现在显式声明 `label: "main"`，与 capability 中的 `windows` 字段显式匹配，消除了隐式契约。
+
 ## [0.1.0] - 2026-06-26
 
 ### 首个版本
