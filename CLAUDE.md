@@ -329,9 +329,9 @@ Agent(
   - 消息格式：JSON（使用 serde_json）
 
 ### 粘贴板操作
-- **tauri-plugin-clipboard**
+- **tauri-plugin-clipboard-manager**
   - 监听粘贴板：500ms 轮询间隔
-  - 禁止直接调用系统粘贴板 API，必须通过 Tauri 插件
+  - 统一通过 tauri-plugin-clipboard-manager 访问粘贴板，禁止直接使用 arboard 等系统 API
   - 标记消息来源：写入时设置标记，避免消息回环
 
 ### 数据存储

@@ -133,7 +133,9 @@ pub struct ClipboardEvent {
 
 **关键文件：**
 - `src-tauri/src/clipboard/monitor.rs` - 粘贴板监听器
-- `src-tauri/src/clipboard/manager.rs` - 粘贴板管理器
+- `src-tauri/src/clipboard/writer.rs` - 粘贴板写入器
+- `src-tauri/src/clipboard/dedup.rs` - 去重逻辑
+- `src-tauri/src/clipboard/storage.rs` - 历史持久化
 
 #### 3.3 存储模块 (Storage)
 
