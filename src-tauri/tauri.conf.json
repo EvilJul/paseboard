@@ -48,7 +48,10 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "capabilities": [
+        "default"
+      ]
     },
     "trayIcon": {
       "iconPath": "icons/icon.png",
