@@ -53,41 +53,6 @@
             border-bottom-color: #c4612f;
         }
 
-        /* 顶栏开发者模式开关 */
-        .tab-actions {
-            margin-left: auto;
-            display: flex;
-            align-items: center;
-            padding-right: 4px;
-        }
-
-        .dev-mode-top-btn {
-            padding: 5px 12px;
-            border: 1px solid #e7e1d7;
-            border-radius: 6px;
-            background: #fbf9f5;
-            cursor: pointer;
-            font-size: 12px;
-            color: #5c635d;
-            transition: all 0.2s;
-            white-space: nowrap;
-        }
-
-        .dev-mode-top-btn:hover {
-            background: #f2e3d6;
-            border-color: #d4cbbe;
-        }
-
-        .dev-mode-top-btn.on {
-            background: #c4612f;
-            color: #fff;
-            border-color: #c4612f;
-        }
-
-        .dev-mode-top-btn.on:hover {
-            background: #b35528;
-        }
-
         /* 标签页内容 */
         .tab-content {
             flex: 1;
@@ -174,6 +139,7 @@
         }
 
         .status-dot {
+            display: inline-block;
             width: 8px;
             height: 8px;
             border-radius: 50%;
@@ -218,25 +184,6 @@
             z-index: 999;
             box-shadow: 0 4px 16px rgba(0,0,0,0.3);
             animation: fadeIn 0.15s ease;
-        }
-
-        /* 开发者模式状态栏文本开关 */
-        .dev-mode-label {
-            cursor: pointer;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            transition: all 0.2s;
-            user-select: none;
-        }
-
-        .dev-mode-label:hover {
-            background: #f2e3d6;
-        }
-
-        .dev-mode-label.on {
-            color: #c4612f;
-            font-weight: 600;
         }
 
         /* 相对时间 */
@@ -584,9 +531,6 @@
         <div class="tabs">
             <button class="tab-btn active" data-tab="devices">设备列表</button>
             <button class="tab-btn" data-tab="history">历史记录</button>
-            <div class="tab-actions">
-                <button id="dev-mode-top-btn" class="dev-mode-top-btn" title="点击切换 (Ctrl+Shift+D)">🔧 开发者模式: 关</button>
-            </div>
         </div>
 
         <!-- 标签页内容 -->
@@ -664,13 +608,9 @@
 
         <!-- 底部状态栏 + 调试按钮 -->
         <div class="statusbar">
-            <span style="display:flex;align-items:center;gap:4px;">
-                <span id="status-text">就绪</span>
-                <span id="dev-mode-label" class="dev-mode-label" title="点击切换 (Ctrl+Shift+D)">开发者模式: 关</span>
-            </span>
+            <span id="status-text">就绪</span>
             <div class="statusbar-actions">
                 <button id="console-toggle-btn" class="devtools-btn" style="display:none" title="控制台">📋 控制台</button>
-                <button id="devtools-btn" class="devtools-btn" title="打开浏览器 DevTools（仅 debug 构建）">🛠</button>
                 <div class="settings-wrap">
                     <button id="settings-btn" class="devtools-btn" title="设置">⚙️</button>
                     <div id="settings-dropdown" class="settings-dropdown" style="display:none">
@@ -799,10 +739,7 @@
                     <tr>
                         <td>${device.name}</td>
                         <td>
-                            <div class="status-indicator">
-                                <span class="status-dot ${device.is_connected ? 'online' : 'offline'}"></span>
-                                <span>${device.is_connected ? '已连接' : '未连接'}</span>
-                            </div>
+                            <span class="status-dot ${device.is_connected ? 'online' : 'offline'}"></span>
                         </td>
                         <td>${device.addr}</td>
                         <td>${device.port}</td>
@@ -940,17 +877,6 @@
         window.escapeHtml = escapeHtml;
         window.copyLogText = copyLogText;
 
-        // 打开开发者工具（仅 debug 构建有效；release 下后端仅打印日志）
-        document.getElementById('devtools-btn').addEventListener('click', async () => {
-            try {
-                await invoke('open_devtools');
-                showToast('已请求打开开发者工具');
-            } catch (error) {
-                console.error('打开开发者工具失败:', error);
-                showToast('打开失败: ' + error);
-            }
-        });
-
         let consoleLogs = [];
         let consoleVisible = false;
         let pollingInterval = null;
@@ -975,17 +901,10 @@
             const dropdown = document.getElementById('settings-dropdown');
             const devToggle = document.getElementById('dev-mode-toggle');
             const consoleBtn = document.getElementById('console-toggle-btn');
-            const devLabel = document.getElementById('dev-mode-label');
-            const devTopBtn = document.getElementById('dev-mode-top-btn');
 
             function updateDevModeUI(enabled) {
                 devToggle.checked = enabled;
                 consoleBtn.style.display = enabled ? 'inline-block' : 'none';
-                const label = enabled ? '开发者模式: 开' : '开发者模式: 关';
-                devLabel.textContent = label;
-                devLabel.classList.toggle('on', enabled);
-                devTopBtn.textContent = '🔧 ' + label;
-                devTopBtn.classList.toggle('on', enabled);
                 localStorage.setItem('paseboard:devMode', enabled ? 'true' : 'false');
                 if (enabled) {
                     openConsole();
@@ -1011,16 +930,6 @@
 
             devToggle.addEventListener('change', () => {
                 updateDevModeUI(devToggle.checked);
-            });
-
-            // 状态栏开发者模式标签点击切换
-            devLabel.addEventListener('click', () => {
-                updateDevModeUI(!devToggle.checked);
-            });
-
-            // 顶栏按钮切换开发者模式
-            devTopBtn.addEventListener('click', () => {
-                updateDevModeUI(!devToggle.checked);
             });
 
             // Ctrl+Shift+D 快捷键切换开发者模式
