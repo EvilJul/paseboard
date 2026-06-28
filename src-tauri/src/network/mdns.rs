@@ -18,6 +18,12 @@ use crate::utils::error::NetworkError;
 /// mDNS 服务类型
 const SERVICE_TYPE: &str = "_paseboard._tcp.local.";
 
+/// UDP 广播发现端口（独立于 mDNS 的 5353，避免端口冲突）
+const BROADCAST_PORT: u16 = 9528;
+
+/// UDP 广播间隔（秒）
+const BROADCAST_INTERVAL_SECS: u64 = 5;
+
 /// 默认端口范围
 const PORT_RANGE_START: u16 = 9527;
 const PORT_RANGE_END: u16 = 9537;
@@ -304,6 +310,179 @@ impl MdnsService {
                 .as_secs();
         }
     }
+
+    /// 启动 UDP 广播发现（作为 mDNS 在 macOS 上的备用方案）
+    ///
+    /// mDNS 在 macOS 上可能因端口 5353 被系统 mDNSResponder 占用而无法接收
+    /// 多播响应。UDP 广播使用独立端口 9528，不依赖 mDNS 基础设施。
+    ///
+    /// 启动两个后台线程：
+    /// - 发送线程：每 5 秒广播本机设备信息到子网广播地址
+    /// - 接收线程：持续监听其他设备的广播并更新设备列表
+    pub fn start_broadcast_discovery(&self) {
+        let local_ip = Self::detect_local_ipv4()
+            .unwrap_or_else(|| {
+                log::warn!("UDP 广播：无法检测本机 IP，使用 127.0.0.1");
+                "127.0.0.1".to_string()
+            });
+
+        let send_devices = Arc::clone(&self.devices);
+        let send_id = self.device_id.clone();
+        let send_name = self.device_name.clone();
+        let send_port = self.port;
+        let send_ip = local_ip.clone();
+        std::thread::spawn(move || {
+            Self::udp_broadcast_sender_loop(send_devices, send_id, send_name, send_port, &send_ip);
+        });
+
+        let recv_devices = Arc::clone(&self.devices);
+        let own_id = self.device_id.clone();
+        std::thread::spawn(move || {
+            Self::udp_broadcast_listener_loop(recv_devices, &own_id);
+        });
+
+        log::info!("UDP 广播发现已启动（端口 {}）", BROADCAST_PORT);
+    }
+
+    /// UDP 广播发送线程
+    fn udp_broadcast_sender_loop(
+        _devices: Arc<Mutex<HashMap<String, DeviceInfo>>>,
+        device_id: String,
+        device_name: String,
+        port: u16,
+        local_ip: &str,
+    ) {
+        let socket = match std::net::UdpSocket::bind("0.0.0.0:0") {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("UDP 广播发送 socket 创建失败: {}", e);
+                return;
+            }
+        };
+        if let Err(e) = socket.set_broadcast(true) {
+            log::error!("UDP 广播设置失败: {}", e);
+            return;
+        }
+
+        let msg = serde_json::json!({
+            "type": "paseboard_discovery",
+            "device_id": device_id,
+            "device_name": device_name,
+            "addr": local_ip,
+            "port": port,
+        });
+        let payload = match serde_json::to_string(&msg) {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("UDP 广播序列化失败: {}", e);
+                return;
+            }
+        };
+
+        let dest = format!("255.255.255.255:{}", BROADCAST_PORT);
+
+        log::info!("UDP 广播目标: {} (本机 IP: {})", dest, local_ip);
+
+        loop {
+            if let Err(e) = socket.send_to(payload.as_bytes(), &dest) {
+                log::warn!("UDP 广播发送失败: {}", e);
+            }
+            std::thread::sleep(Duration::from_secs(BROADCAST_INTERVAL_SECS));
+        }
+    }
+
+    /// UDP 广播接收线程
+    fn udp_broadcast_listener_loop(
+        devices: Arc<Mutex<HashMap<String, DeviceInfo>>>,
+        own_device_id: &str,
+    ) {
+        let socket = match std::net::UdpSocket::bind(format!("0.0.0.0:{}", BROADCAST_PORT)) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("UDP 广播监听 socket 创建失败（端口 {}）: {}", BROADCAST_PORT, e);
+                return;
+            }
+        };
+        if let Err(e) = socket.set_broadcast(true) {
+            log::error!("UDP 广播监听设置失败: {}", e);
+            return;
+        }
+
+        let own_id = own_device_id.to_string();
+        let mut buf = [0u8; 2048];
+
+        log::info!("UDP 广播监听线程已启动");
+
+        loop {
+            match socket.recv_from(&mut buf) {
+                Ok((size, src_addr)) => {
+                    let data_str = match std::str::from_utf8(&buf[..size]) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+
+                    let parsed: serde_json::Value = match serde_json::from_str(data_str) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    // 验证消息类型
+                    let is_paseboard = parsed
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .map(|t| t == "paseboard_discovery")
+                        .unwrap_or(false);
+                    if !is_paseboard {
+                        continue;
+                    }
+
+                    let remote_id = match parsed.get("device_id").and_then(|v| v.as_str()) {
+                        Some(id) => id,
+                        None => continue,
+                    };
+
+                    // 跳过自己的广播
+                    if remote_id == own_id {
+                        continue;
+                    }
+
+                    let name = parsed
+                        .get("device_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown")
+                        .to_string();
+                    let addr_str = parsed.get("addr").and_then(|v| v.as_str()).unwrap_or("");
+                    let remote_port = parsed.get("port").and_then(|v| v.as_u64()).unwrap_or(9527) as u16;
+
+                    // 优先使用源 IP（更可靠），仅当无法解析时使用 JSON 中的 addr
+                    let addr = src_addr.ip();
+                    let _ = addr_str; // 保留 addr_str 供日志使用
+
+                    let last_seen = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+
+                    {
+                        let mut d = devices.lock().unwrap();
+                        d.insert(remote_id.to_string(), DeviceInfo {
+                            id: remote_id.to_string(),
+                            name,
+                            addr,
+                            port: remote_port,
+                            last_seen,
+                        });
+                    }
+                }
+                Err(e) => {
+                    // macOS 上如果端口冲突会反复报错，降低日志频率
+                    log::warn!("UDP 广播接收错误: {}", e);
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
 }
 
 #[cfg(test)]

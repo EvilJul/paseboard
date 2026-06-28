@@ -262,6 +262,9 @@ impl App {
             }
         });
 
+        // 启动 UDP 广播发现（作为 mDNS 的备用方案，避免 macOS 端口 5353 冲突）
+        mdns.start_broadcast_discovery();
+
         // 启动粘贴板监听器（独立任务）
         tokio::spawn(async move {
             clipboard_monitor.start().await;
