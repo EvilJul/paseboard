@@ -86,7 +86,10 @@ impl KeyManager {
                 .map_err(|e| StorageError::KeychainError(e.to_string()))?;
 
             if output.status.success() {
-                let password = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let password = String::from_utf8(output.stdout.clone())
+                    .map_err(|e| StorageError::KeychainError(format!("密钥链输出不是有效 UTF-8: {}", e)))?
+                    .trim()
+                    .to_string();
                 if !password.is_empty() {
                     return Ok(password);
                 }
