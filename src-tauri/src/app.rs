@@ -243,7 +243,7 @@ impl App {
             storage_query_tx: _, // 已在 Self 中持有，无须再传递
             dedup_service,
             clients,
-            ..
+            server_connected_device_ids,
         } = self;
 
         // 启动 WebSocket 服务端（独立任务）
@@ -275,6 +275,7 @@ impl App {
             let mdns_for_discovery = Arc::clone(&mdns);
             let config_for_discovery = config.clone();
             let clients_for_discovery = Arc::clone(&clients);
+            let server_ids_for_discovery = Arc::clone(&server_connected_device_ids);
             let dedup_service_for_discovery = Arc::clone(&dedup_service);
             let clipboard_writer_for_discovery = Arc::clone(&clipboard_writer);
             let storage_tx_for_discovery = storage_tx.clone();
@@ -284,6 +285,7 @@ impl App {
                     mdns_for_discovery,
                     config_for_discovery,
                     clients_for_discovery,
+                    server_ids_for_discovery,
                     dedup_service_for_discovery,
                     clipboard_writer_for_discovery,
                     storage_tx_for_discovery,
@@ -330,6 +332,7 @@ impl App {
         mdns: Arc<MdnsService>,
         config: AppConfig,
         clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
+        server_connected_ids: Arc<RwLock<HashSet<String>>>,
         dedup_service: Arc<DeduplicationService>,
         clipboard_writer: Arc<ClipboardWriter>,
         storage_tx: mpsc::UnboundedSender<StorageRequest>,
@@ -340,6 +343,20 @@ impl App {
 
         loop {
             ticker.tick().await;
+
+            // 同步已连接的设备到 mDNS 设备列表，防止被清理任务删除
+            {
+                let clients_read = clients.read().await;
+                for id in clients_read.keys() {
+                    mdns.update_device_heartbeat(id);
+                }
+            }
+            {
+                let server_read = server_connected_ids.read().await;
+                for id in server_read.iter() {
+                    mdns.update_device_heartbeat(id);
+                }
+            }
 
             // 获取当前发现的设备列表
             let devices = mdns.get_devices();
