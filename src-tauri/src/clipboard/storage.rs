@@ -93,15 +93,36 @@ impl HistoryStorage {
     /// * `device_name` - 设备名称
     ///
     /// # Returns
-    /// 插入的记录 ID
+    /// 插入的记录 ID（跳过时返回 -1）
     pub fn insert(
         &mut self,
         content: &str,
         device_id: &str,
         device_name: &str,
     ) -> Result<i64, StorageError> {
+        // 跳过空内容（仅空白字符）
+        if content.trim().is_empty() {
+            return Ok(-1);
+        }
+
         // 计算内容哈希
         let content_hash = Self::compute_hash(content);
+
+        // 查询最近一条记录的哈希，相同内容则跳过
+        let last_hash: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT content_hash FROM clipboard_history ORDER BY timestamp DESC, id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(ref hash) = last_hash {
+            if hash == &content_hash {
+                return Ok(-1);
+            }
+        }
 
         // 计算内容大小（字节）
         let size = content.len() as i64;
@@ -179,8 +200,20 @@ impl HistoryStorage {
         })?;
 
         let mut result = Vec::new();
+        let mut last_content: Option<String> = None;
         for item in items {
-            result.push(item?);
+            let item = item?;
+            // 去重去空：跳过内容为空或与前一条内容相同的记录
+            if item.content.trim().is_empty() {
+                continue;
+            }
+            if let Some(ref last) = last_content {
+                if last == &item.content {
+                    continue;
+                }
+            }
+            last_content = Some(item.content.clone());
+            result.push(item);
         }
 
         Ok(result)

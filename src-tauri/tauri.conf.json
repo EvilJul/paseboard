@@ -42,8 +42,8 @@
         "fullscreen": false,
         "resizable": true,
         "title": "PaseBoard",
-        "width": 900,
-        "height": 650,
+        "width": 460,
+        "height": 720,
         "center": true,
         "visible": true
       }

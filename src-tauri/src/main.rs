@@ -18,6 +18,8 @@ use log::info;
 use std::sync::Arc;
 use tauri::Manager;
 
+use utils::console_logger::{CompositeLogger, LogBuffer, LogEntry};
+
 /// 设备信息（用于 IPC 返回）
 #[derive(Debug, Clone, serde::Serialize)]
 struct DeviceInfo {
@@ -70,6 +72,19 @@ impl From<crate::clipboard::storage::HistoryItem> for HistoryItem {
 /// 全局应用句柄（用于在 IPC 命令中访问已发现的设备和历史记录）
 pub type AppState = Arc<IpcHandles>;
 
+/// 复制文本到系统粘贴板（绕过前端 IPC ACL 权限检查）
+#[tauri::command]
+async fn copy_to_clipboard(content: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|e| format!("打开粘贴板失败: {}", e))?;
+        clipboard.set_text(content)
+            .map_err(|e| format!("复制失败: {}", e))
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
+}
+
 /// 查询设备列表 IPC 命令
 #[tauri::command]
 async fn get_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
@@ -109,9 +124,22 @@ fn open_devtools(window: tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
+/// 获取控制台日志
+#[tauri::command]
+fn get_console_logs(state: tauri::State<'_, LogBuffer>) -> Result<Vec<LogEntry>, String> {
+    Ok(state.snapshot())
+}
+
 fn main() {
-    // 初始化日志系统
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // 初始化日志系统（同时写内存环形缓存 + stderr）
+    let log_buffer: LogBuffer = {
+        let buffer = LogBuffer::new(500);
+        let logger = CompositeLogger::new(buffer.clone());
+        log::set_boxed_logger(Box::new(logger))
+            .map(|()| log::set_max_level(log::LevelFilter::Info))
+            .expect("设置 Logger 失败");
+        buffer
+    };
 
     info!("PaseBoard 启动中...");
 
@@ -146,7 +174,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_devices,
             get_history,
-            open_devtools
+            open_devtools,
+            get_console_logs,
+            copy_to_clipboard,
         ])
         .setup(move |app| {
             // 创建系统托盘
@@ -183,6 +213,12 @@ fn main() {
                     // （避免 App 中非 Send/Sync 字段导致状态注册失败）
                     let ipc_handles = Arc::new(app.ipc_handles());
                     app_handle.manage(ipc_handles);
+
+                    // 注册日志缓存到 Tauri 状态（供前端 get_console_logs 调用）
+                    {
+                        let lb = log_buffer.clone();
+                        app_handle.manage(lb);
+                    }
 
                     // 运行应用主循环
                     if let Err(e) = app.run().await {
