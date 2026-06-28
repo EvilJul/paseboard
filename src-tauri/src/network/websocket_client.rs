@@ -7,10 +7,11 @@
 // - 心跳检测
 
 use crate::utils::error::NetworkError;
+use super::crypto::{CryptoSession, CryptoTransport};
 use super::message::Message;
 use super::websocket_common::{
-    calculate_reconnect_delay, decode_message, encode_message, is_heartbeat_timeout,
-    HEARTBEAT_INTERVAL_SECS, MAX_RECONNECT_ATTEMPTS,
+    calculate_reconnect_delay, decrypt_ws_message, encode_encrypted_message,
+    encode_message, is_heartbeat_timeout, HEARTBEAT_INTERVAL_SECS, MAX_RECONNECT_ATTEMPTS,
 };
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, info, warn};
@@ -50,6 +51,10 @@ pub struct WebSocketClient {
     last_heartbeat: Arc<RwLock<i64>>,
     /// 断开通知发送端
     disconnect_tx: watch::Sender<bool>,
+    /// 加密传输层
+    crypto: Arc<CryptoTransport>,
+    /// 加密会话
+    session: Arc<RwLock<Option<CryptoSession>>>,
 }
 
 impl WebSocketClient {
@@ -58,12 +63,14 @@ impl WebSocketClient {
     /// # 参数
     /// - `server_url`: 服务端地址（如 "ws://192.168.1.100:9527"）
     /// - `device_id`: 本设备 ID
+    /// - `crypto`: 加密传输层
     ///
     /// # 返回
     /// - `(WebSocketClient, mpsc::UnboundedReceiver<Message>)`: 客户端实例和消息接收通道
     pub fn new(
         server_url: String,
         device_id: String,
+        crypto: Arc<CryptoTransport>,
     ) -> (Self, mpsc::UnboundedReceiver<Message>) {
         let (send_tx, send_rx) = mpsc::unbounded_channel();
         let (message_tx, message_rx) = mpsc::unbounded_channel();
@@ -78,6 +85,8 @@ impl WebSocketClient {
             message_tx,
             last_heartbeat: Arc::new(RwLock::new(chrono::Utc::now().timestamp())),
             disconnect_tx,
+            crypto,
+            session: Arc::new(RwLock::new(None)),
         };
 
         // 启动发送任务
@@ -163,6 +172,9 @@ impl WebSocketClient {
         let device_id = self.device_id.clone();
         let internal_send_tx = Arc::clone(&self.internal_send_tx);
         let disconnect_tx = self.disconnect_tx.clone();
+        let crypto = Arc::clone(&self.crypto);
+        let session = Arc::clone(&self.session);
+        let local_secret = self.crypto.local_secret_bytes();
 
         tokio::spawn(async move {
             let (mut ws_sink, mut ws_stream) = ws_stream.split();
@@ -197,12 +209,37 @@ impl WebSocketClient {
 
             // 启动读任务
             let internal_send_tx_for_read = Arc::clone(&internal_send_tx);
+            let crypto_for_read = Arc::clone(&crypto);
+            let session_for_read = Arc::clone(&session);
             let read_task = tokio::spawn(async move {
                 while let Some(result) = ws_stream.next().await {
                     match result {
                         Ok(ws_msg) => {
-                            // 解码消息
-                            match decode_message(ws_msg) {
+                            // 尝试解密并解码消息
+                            let mut session_write = session_for_read.write().await;
+                            let decrypt_result = if let Some(ref mut s) = *session_write {
+                                decrypt_ws_message(ws_msg, &crypto_for_read, s, &local_secret)
+                            } else {
+                                // 无 session 时，创建一个临时 session 尝试解密
+                                let mut temp_session = CryptoSession {
+                                    key: [0u8; 32],
+                                    remote_pubkey: [0u8; 32],
+                                };
+                                let result = decrypt_ws_message(
+                                    ws_msg,
+                                    &crypto_for_read,
+                                    &mut temp_session,
+                                    &local_secret,
+                                );
+                                // 如果解密成功，保存 session
+                                if result.is_ok() && temp_session.key != [0u8; 32] {
+                                    *session_write = Some(temp_session);
+                                }
+                                result
+                            };
+                            drop(session_write);
+
+                            match decrypt_result {
                                 Ok(Some(msg)) => {
                                     // 更新心跳时间
                                     if msg.is_heartbeat() || msg.is_heartbeat_ack() {
@@ -212,11 +249,17 @@ impl WebSocketClient {
                                         // 收到心跳，发送响应
                                         if msg.is_heartbeat() {
                                             let ack = Message::new_heartbeat_ack(device_id.clone());
-                                            if let Ok(ws_msg) = encode_message(&ack) {
-                                                let internal_tx_read = internal_send_tx_for_read.read().await;
-                                                if let Some(tx) = internal_tx_read.as_ref() {
-                                                    let _ = tx.send(ws_msg);
-                                                }
+                                            let session_read = session_for_read.read().await;
+                                            let ws_msg = if let Some(ref s) = *session_read {
+                                                encode_encrypted_message(&ack, &crypto_for_read, s)
+                                                    .unwrap_or_else(|_| encode_message(&ack).unwrap())
+                                            } else {
+                                                encode_message(&ack).unwrap()
+                                            };
+                                            drop(session_read);
+                                            let internal_tx_read = internal_send_tx_for_read.read().await;
+                                            if let Some(tx) = internal_tx_read.as_ref() {
+                                                let _ = tx.send(ws_msg);
                                             }
                                         }
                                     } else {
@@ -263,9 +306,14 @@ impl WebSocketClient {
     }
 
     /// 启动发送任务（从应用层通道接收消息并转发到 WebSocket）
-    fn spawn_send_task(&self, mut send_rx: mpsc::UnboundedReceiver<Message>) {
+    fn spawn_send_task(
+        &self,
+        mut send_rx: mpsc::UnboundedReceiver<Message>,
+    ) {
         let state = Arc::clone(&self.state);
         let internal_send_tx = Arc::clone(&self.internal_send_tx);
+        let crypto = Arc::clone(&self.crypto);
+        let session = Arc::clone(&self.session);
 
         tokio::spawn(async move {
             while let Some(msg) = send_rx.recv().await {
@@ -277,8 +325,18 @@ impl WebSocketClient {
                 }
                 drop(current_state);
 
-                // 编码并发送
-                match encode_message(&msg) {
+                // 检查是否有加密 session
+                let session_read = session.read().await;
+                let result = if let Some(ref s) = *session_read {
+                    // 加密发送
+                    encode_encrypted_message(&msg, &crypto, s)
+                } else {
+                    // 明文发送
+                    encode_message(&msg)
+                };
+                drop(session_read);
+
+                match result {
                     Ok(ws_msg) => {
                         let internal_tx_read = internal_send_tx.read().await;
                         if let Some(tx) = internal_tx_read.as_ref() {
@@ -375,12 +433,25 @@ impl WebSocketClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::crypto::CryptoTransport;
+    use crate::network::identity::IdentityManager;
+
+    fn create_test_crypto() -> Arc<CryptoTransport> {
+        let identity_path = std::env::temp_dir().join("paseboard_test_ws_client_id.pem");
+        let _ = std::fs::remove_file(&identity_path);
+        let identity = Arc::new(IdentityManager::new(identity_path.clone()).unwrap());
+        let crypto = Arc::new(CryptoTransport::new(identity));
+        let _ = std::fs::remove_file(&identity_path);
+        crypto
+    }
 
     #[tokio::test]
     async fn test_client_creation() {
+        let crypto = create_test_crypto();
         let (client, _rx) = WebSocketClient::new(
             "ws://127.0.0.1:9527".to_string(),
             "test-device".to_string(),
+            crypto,
         );
 
         assert_eq!(client.server_url(), "ws://127.0.0.1:9527");
@@ -389,9 +460,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_when_disconnected() {
+        let crypto = create_test_crypto();
         let (client, _rx) = WebSocketClient::new(
             "ws://127.0.0.1:9527".to_string(),
             "test-device".to_string(),
+            crypto,
         );
 
         let msg = Message::new_clipboard("Test".to_string(), "device-1".to_string());
