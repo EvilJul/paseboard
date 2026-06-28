@@ -18,6 +18,12 @@ use crate::utils::error::NetworkError;
 /// mDNS 服务类型
 const SERVICE_TYPE: &str = "_paseboard._tcp.local.";
 
+/// UDP 广播发现端口（独立于 mDNS 的 5353，避免端口冲突）
+const BROADCAST_PORT: u16 = 9528;
+
+/// UDP 广播间隔（秒）
+const BROADCAST_INTERVAL_SECS: u64 = 5;
+
 /// 默认端口范围
 const PORT_RANGE_START: u16 = 9527;
 const PORT_RANGE_END: u16 = 9537;
@@ -152,11 +158,39 @@ impl MdnsService {
         Ok(())
     }
 
-    /// 通过 UDP socket connect 到公网地址（不发包）的方式，
-    /// 让操作系统选择本机在局域网接口上的 IPv4。
-    /// 该方法不依赖任何第三方 crate。
+    /// 检测本机局域网 IPv4 地址
+    ///
+    /// 策略：
+    /// 1. 优先枚举所有网络接口，取第一个非回环、非代理假 IP（198.18.0.0/15）、
+    ///    且是私有 IPv4 地址（192.168.x.x / 10.x.x.x / 172.16-31.x.x）
+    /// 2. 回退到 UDP connect 8.8.8.8:80 方法（原方案）
     fn detect_local_ipv4() -> Option<String> {
-        // 连接到 8.8.8.8:80 不会真的发包，仅让 OS 选出本机出口 IP
+        // 策略一：枚举网络接口（可跳过代理接口）
+        if let Ok(if_addrs) = get_if_addrs::get_if_addrs() {
+            for iface in &if_addrs {
+                let ip = iface.ip();
+                match ip {
+                    std::net::IpAddr::V4(v4) => {
+                        let octets = v4.octets();
+                        // 跳过回环
+                        if octets[0] == 127 { continue; }
+                        // 跳过 Surge/ClashX 假 IP 段 198.18.0.0/15
+                        if octets[0] == 198 && octets[1] == 18 { continue; }
+                        // 只保留私有地址段
+                        let is_private = octets[0] == 10
+                            || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+                            || (octets[0] == 192 && octets[1] == 168)
+                            || (octets[0] == 100 && (64..=127).contains(&octets[1])); // CGNAT
+                        if is_private {
+                            return Some(v4.to_string());
+                        }
+                    }
+                    std::net::IpAddr::V6(_) => {}
+                }
+            }
+        }
+
+        // 策略二：回退到 UDP connect 方法
         let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
         socket.connect("8.8.8.8:80").ok()?;
         let addr = socket.local_addr().ok()?;
@@ -247,14 +281,22 @@ impl MdnsService {
             .and_then(|val| Some(val.val_str().to_string()))?;
 
         // 获取设备名称（服务实例名称）
-        let device_name = info.get_fullname()
-            .trim_end_matches(SERVICE_TYPE)
-            .trim_end_matches('.')
+        // 注意：trim_end_matches 是按字符集匹配，不能用于子串匹配
+        let fullname = info.get_fullname();
+        let suffix = SERVICE_TYPE.strip_suffix('.').unwrap_or(SERVICE_TYPE);
+        let device_name = fullname
+            .strip_suffix(suffix)
+            .or_else(|| fullname.strip_suffix(SERVICE_TYPE))
+            .map(|n| n.strip_suffix('.').unwrap_or(n))
+            .unwrap_or(&fullname)
             .to_string();
 
-        // 获取 IP 地址（mdns-sd 0.7.5 返回 Ipv4Addr）
+        // 获取 IP 地址（过滤 loopback，优先选择非回环的 IPv4）
         let addresses = info.get_addresses();
-        let addr = addresses.iter().next()?;
+        let addr = addresses.iter()
+            .filter(|a| !a.is_loopback())
+            .next()
+            .or_else(|| addresses.iter().next())?;
         let addr = IpAddr::V4(*addr);
 
         // 获取端口
@@ -296,6 +338,179 @@ impl MdnsService {
                 .as_secs();
         }
     }
+
+    /// 启动 UDP 广播发现（作为 mDNS 在 macOS 上的备用方案）
+    ///
+    /// mDNS 在 macOS 上可能因端口 5353 被系统 mDNSResponder 占用而无法接收
+    /// 多播响应。UDP 广播使用独立端口 9528，不依赖 mDNS 基础设施。
+    ///
+    /// 启动两个后台线程：
+    /// - 发送线程：每 5 秒广播本机设备信息到子网广播地址
+    /// - 接收线程：持续监听其他设备的广播并更新设备列表
+    pub fn start_broadcast_discovery(&self) {
+        let local_ip = Self::detect_local_ipv4()
+            .unwrap_or_else(|| {
+                log::warn!("UDP 广播：无法检测本机 IP，使用 127.0.0.1");
+                "127.0.0.1".to_string()
+            });
+
+        let send_devices = Arc::clone(&self.devices);
+        let send_id = self.device_id.clone();
+        let send_name = self.device_name.clone();
+        let send_port = self.port;
+        let send_ip = local_ip.clone();
+        std::thread::spawn(move || {
+            Self::udp_broadcast_sender_loop(send_devices, send_id, send_name, send_port, &send_ip);
+        });
+
+        let recv_devices = Arc::clone(&self.devices);
+        let own_id = self.device_id.clone();
+        std::thread::spawn(move || {
+            Self::udp_broadcast_listener_loop(recv_devices, &own_id);
+        });
+
+        log::info!("UDP 广播发现已启动（端口 {}）", BROADCAST_PORT);
+    }
+
+    /// UDP 广播发送线程
+    fn udp_broadcast_sender_loop(
+        _devices: Arc<Mutex<HashMap<String, DeviceInfo>>>,
+        device_id: String,
+        device_name: String,
+        port: u16,
+        local_ip: &str,
+    ) {
+        let socket = match std::net::UdpSocket::bind("0.0.0.0:0") {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("UDP 广播发送 socket 创建失败: {}", e);
+                return;
+            }
+        };
+        if let Err(e) = socket.set_broadcast(true) {
+            log::error!("UDP 广播设置失败: {}", e);
+            return;
+        }
+
+        let msg = serde_json::json!({
+            "type": "paseboard_discovery",
+            "device_id": device_id,
+            "device_name": device_name,
+            "addr": local_ip,
+            "port": port,
+        });
+        let payload = match serde_json::to_string(&msg) {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("UDP 广播序列化失败: {}", e);
+                return;
+            }
+        };
+
+        let dest = format!("255.255.255.255:{}", BROADCAST_PORT);
+
+        log::info!("UDP 广播目标: {} (本机 IP: {})", dest, local_ip);
+
+        loop {
+            if let Err(e) = socket.send_to(payload.as_bytes(), &dest) {
+                log::warn!("UDP 广播发送失败: {}", e);
+            }
+            std::thread::sleep(Duration::from_secs(BROADCAST_INTERVAL_SECS));
+        }
+    }
+
+    /// UDP 广播接收线程
+    fn udp_broadcast_listener_loop(
+        devices: Arc<Mutex<HashMap<String, DeviceInfo>>>,
+        own_device_id: &str,
+    ) {
+        let socket = match std::net::UdpSocket::bind(format!("0.0.0.0:{}", BROADCAST_PORT)) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("UDP 广播监听 socket 创建失败（端口 {}）: {}", BROADCAST_PORT, e);
+                return;
+            }
+        };
+        if let Err(e) = socket.set_broadcast(true) {
+            log::error!("UDP 广播监听设置失败: {}", e);
+            return;
+        }
+
+        let own_id = own_device_id.to_string();
+        let mut buf = [0u8; 2048];
+
+        log::info!("UDP 广播监听线程已启动");
+
+        loop {
+            match socket.recv_from(&mut buf) {
+                Ok((size, src_addr)) => {
+                    let data_str = match std::str::from_utf8(&buf[..size]) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+
+                    let parsed: serde_json::Value = match serde_json::from_str(data_str) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    // 验证消息类型
+                    let is_paseboard = parsed
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .map(|t| t == "paseboard_discovery")
+                        .unwrap_or(false);
+                    if !is_paseboard {
+                        continue;
+                    }
+
+                    let remote_id = match parsed.get("device_id").and_then(|v| v.as_str()) {
+                        Some(id) => id,
+                        None => continue,
+                    };
+
+                    // 跳过自己的广播
+                    if remote_id == own_id {
+                        continue;
+                    }
+
+                    let name = parsed
+                        .get("device_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown")
+                        .to_string();
+                    let addr_str = parsed.get("addr").and_then(|v| v.as_str()).unwrap_or("");
+                    let remote_port = parsed.get("port").and_then(|v| v.as_u64()).unwrap_or(9527) as u16;
+
+                    // 优先使用源 IP（更可靠），仅当无法解析时使用 JSON 中的 addr
+                    let addr = src_addr.ip();
+                    let _ = addr_str; // 保留 addr_str 供日志使用
+
+                    let last_seen = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+
+                    {
+                        let mut d = devices.lock().unwrap();
+                        d.insert(remote_id.to_string(), DeviceInfo {
+                            id: remote_id.to_string(),
+                            name,
+                            addr,
+                            port: remote_port,
+                            last_seen,
+                        });
+                    }
+                }
+                Err(e) => {
+                    // macOS 上如果端口冲突会反复报错，降低日志频率
+                    log::warn!("UDP 广播接收错误: {}", e);
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
 }
 
 #[cfg(test)]
@@ -308,7 +523,7 @@ mod tests {
         // 测试端口检查逻辑（实际端口可用性取决于系统）
         let available = MdnsService::is_port_available(9527);
         // 只验证函数能正常返回，不验证具体结果
-        assert!(available || !available);
+        let _ = available;
     }
 
     #[test]
@@ -402,6 +617,31 @@ mod tests {
 
             let updated_devices = service.get_devices();
             assert!(updated_devices[0].last_seen > old_timestamp);
+        }
+    }
+
+    #[test]
+    fn test_detect_local_ipv4() {
+        let ip = MdnsService::detect_local_ipv4();
+        match ip {
+            Some(addr) => {
+                // 验证返回的是有效 IPv4 地址
+                assert!(!addr.is_empty(), "IP 地址不应为空");
+                assert!(!addr.starts_with("127."), "不应返回回环地址: {}", addr);
+
+                // 验证是私有地址或 CGNAT 地址
+                let valid = addr.starts_with("10.")
+                    || addr.starts_with("192.168.")
+                    || addr.starts_with("172.1")
+                    || addr.starts_with("172.2")
+                    || addr.starts_with("172.3")
+                    || addr.starts_with("100.");
+                assert!(valid, "IP {} 不是私有地址", addr);
+            }
+            None => {
+                // 没有网络接口时允许失败
+                println!("detect_local_ipv4 返回 None（无网络接口）");
+            }
         }
     }
 

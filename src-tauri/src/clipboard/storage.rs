@@ -75,9 +75,9 @@ impl HistoryStorage {
             [],
         )?;
 
-        // 创建内容哈希索引（用于快速去重检查）
+        // 创建内容哈希唯一索引（用于去重 + 防并发重复）
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_content_hash
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_content_hash
              ON clipboard_history(content_hash)",
             [],
         )?;
@@ -93,15 +93,36 @@ impl HistoryStorage {
     /// * `device_name` - 设备名称
     ///
     /// # Returns
-    /// 插入的记录 ID
+    /// 插入的记录 ID（跳过时返回 -1）
     pub fn insert(
         &mut self,
         content: &str,
         device_id: &str,
         device_name: &str,
     ) -> Result<i64, StorageError> {
+        // 跳过空内容（仅空白字符）
+        if content.trim().is_empty() {
+            return Ok(-1);
+        }
+
         // 计算内容哈希
         let content_hash = Self::compute_hash(content);
+
+        // 查询最近一条记录的哈希，相同内容则跳过
+        let last_hash: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT content_hash FROM clipboard_history ORDER BY timestamp DESC, id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(ref hash) = last_hash {
+            if hash == &content_hash {
+                return Ok(-1);
+            }
+        }
 
         // 计算内容大小（字节）
         let size = content.len() as i64;
@@ -115,13 +136,17 @@ impl HistoryStorage {
         // 检查并执行容量管理
         self.enforce_capacity_limit()?;
 
-        // 插入记录
+        // 插入记录（唯一索引自动防并发重复）
         self.conn.execute(
-            "INSERT INTO clipboard_history
+            "INSERT OR IGNORE INTO clipboard_history
              (content, content_hash, device_id, device_name, timestamp, size)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![content, content_hash, device_id, device_name, timestamp, size],
         )?;
+
+        if self.conn.changes() == 0 {
+            return Ok(-1);
+        }
 
         Ok(self.conn.last_insert_rowid())
     }
@@ -179,8 +204,20 @@ impl HistoryStorage {
         })?;
 
         let mut result = Vec::new();
+        let mut last_content: Option<String> = None;
         for item in items {
-            result.push(item?);
+            let item = item?;
+            // 去重去空：跳过内容为空或与前一条内容相同的记录
+            if item.content.trim().is_empty() {
+                continue;
+            }
+            if let Some(ref last) = last_content {
+                if last == &item.content {
+                    continue;
+                }
+            }
+            last_content = Some(item.content.clone());
+            result.push(item);
         }
 
         Ok(result)
@@ -403,6 +440,70 @@ mod tests {
         assert_eq!(items[0].content, "第三条");
         assert_eq!(items[1].content, "第二条");
         assert_eq!(items[2].content, "第一条");
+    }
+
+    #[test]
+    fn test_unique_constraint() {
+        let mut storage = create_temp_storage();
+
+        // 插入一条记录
+        let id1 = storage.insert("相同内容", "device-1", "设备1").unwrap();
+        assert!(id1 > 0);
+
+        // 再次插入相同内容 - UNIQUE 索引应阻止
+        let id2 = storage.insert("相同内容", "device-1", "设备1").unwrap();
+        assert_eq!(id2, -1);
+
+        // 验证 DB 中只有 1 条
+        assert_eq!(storage.count().unwrap(), 1);
+
+        // 插入不同内容应正常
+        let id3 = storage.insert("不同内容", "device-1", "设备1").unwrap();
+        assert!(id3 > 0);
+        assert_eq!(storage.count().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_unique_constraint_different_devices() {
+        let mut storage = create_temp_storage();
+
+        // 同一内容来自不同设备——同样应被 UNIQUE 索引阻止
+        storage.insert("相同", "device-1", "设备1").unwrap();
+        let id = storage.insert("相同", "device-2", "设备2").unwrap();
+        assert_eq!(id, -1);
+        assert_eq!(storage.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_empty_content_skipped() {
+        let mut storage = create_temp_storage();
+
+        // 空白内容应被跳过（不进入 DB）
+        let id = storage.insert("   ", "device-1", "设备1").unwrap();
+        assert_eq!(id, -1);
+        assert_eq!(storage.count().unwrap(), 0);
+
+        // 空字符串也应被跳过
+        let id = storage.insert("", "device-1", "设备1").unwrap();
+        assert_eq!(id, -1);
+        assert_eq!(storage.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_query_recent_dedup() {
+        let mut storage = create_temp_storage();
+
+        // 插入 A → B → B → C，期望查询返回 A → B → C
+        storage.insert("A", "device-1", "设备1").unwrap();
+        storage.insert("B", "device-1", "设备1").unwrap();
+        storage.insert("B", "device-1", "设备1").unwrap();
+        storage.insert("C", "device-1", "设备1").unwrap();
+
+        let items = storage.query_recent(10).unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].content, "C");
+        assert_eq!(items[1].content, "B");
+        assert_eq!(items[2].content, "A");
     }
 
     #[test]

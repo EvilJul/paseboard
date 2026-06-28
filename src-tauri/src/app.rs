@@ -18,7 +18,7 @@ use crate::clipboard::storage::{HistoryStorage, HistoryItem};
 use crate::clipboard::dedup::DeduplicationService;
 
 use log::{info, warn, error, debug};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use sha2::{Sha256, Digest};
@@ -94,6 +94,8 @@ pub struct App {
     dedup_service: Arc<DeduplicationService>,
     /// 已连接的客户端（设备 ID -> WebSocketClient）
     clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
+    /// 已连接的入站远程设备 ID 集合
+    server_connected_device_ids: Arc<RwLock<HashSet<String>>>,
 }
 
 /// 应用对外暴露给 IPC 命令使用的句柄（轻量、Send + Sync）
@@ -102,6 +104,10 @@ pub struct IpcHandles {
     pub mdns: Arc<MdnsService>,
     /// 历史存储查询通道
     pub storage_query_tx: mpsc::UnboundedSender<StorageQuery>,
+    /// 已连接的出站 WebSocket 客户端
+    pub clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
+    /// 已连接的入站远程设备 ID 集合
+    pub server_connected_device_ids: Arc<RwLock<HashSet<String>>>,
 }
 
 impl App {
@@ -116,6 +122,9 @@ impl App {
     pub async fn new(config: AppConfig, app_handle: tauri::AppHandle) -> anyhow::Result<Self> {
         info!("开始初始化应用...");
 
+        // 创建共享的入站连接设备 ID 集合
+        let server_connected_device_ids: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
+
         // 并行初始化三个独立模块：mDNS、WebSocket Server、Storage
         let mdns_handle = {
             let device_id = config.device_id.clone();
@@ -129,8 +138,9 @@ impl App {
         let ws_server_handle = {
             let bind_addr = format!("0.0.0.0:{}", config.port);
             let device_id = config.device_id.clone();
+            let connected_ids = Arc::clone(&server_connected_device_ids);
             tokio::spawn(async move {
-                WebSocketServer::new(bind_addr, device_id)
+                WebSocketServer::new(bind_addr, device_id, connected_ids)
             })
         };
 
@@ -186,6 +196,7 @@ impl App {
             storage_query_tx,
             dedup_service: Arc::new(dedup_service),
             clients: Arc::new(RwLock::new(HashMap::new())),
+            server_connected_device_ids,
         })
     }
 
@@ -232,6 +243,7 @@ impl App {
             storage_query_tx: _, // 已在 Self 中持有，无须再传递
             dedup_service,
             clients,
+            server_connected_device_ids,
         } = self;
 
         // 启动 WebSocket 服务端（独立任务）
@@ -250,6 +262,9 @@ impl App {
             }
         });
 
+        // 启动 UDP 广播发现（作为 mDNS 的备用方案，避免 macOS 端口 5353 冲突）
+        mdns.start_broadcast_discovery();
+
         // 启动粘贴板监听器（独立任务）
         tokio::spawn(async move {
             clipboard_monitor.start().await;
@@ -260,6 +275,7 @@ impl App {
             let mdns_for_discovery = Arc::clone(&mdns);
             let config_for_discovery = config.clone();
             let clients_for_discovery = Arc::clone(&clients);
+            let server_ids_for_discovery = Arc::clone(&server_connected_device_ids);
             let dedup_service_for_discovery = Arc::clone(&dedup_service);
             let clipboard_writer_for_discovery = Arc::clone(&clipboard_writer);
             let storage_tx_for_discovery = storage_tx.clone();
@@ -269,6 +285,7 @@ impl App {
                     mdns_for_discovery,
                     config_for_discovery,
                     clients_for_discovery,
+                    server_ids_for_discovery,
                     dedup_service_for_discovery,
                     clipboard_writer_for_discovery,
                     storage_tx_for_discovery,
@@ -315,6 +332,7 @@ impl App {
         mdns: Arc<MdnsService>,
         config: AppConfig,
         clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
+        server_connected_ids: Arc<RwLock<HashSet<String>>>,
         dedup_service: Arc<DeduplicationService>,
         clipboard_writer: Arc<ClipboardWriter>,
         storage_tx: mpsc::UnboundedSender<StorageRequest>,
@@ -322,13 +340,27 @@ impl App {
         info!("设备发现流程已启动");
 
         let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(5));
-        let mut attempted_devices: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         loop {
             ticker.tick().await;
 
+            // 同步已连接的设备到 mDNS 设备列表，防止被清理任务删除
+            {
+                let clients_read = clients.read().await;
+                for id in clients_read.keys() {
+                    mdns.update_device_heartbeat(id);
+                }
+            }
+            {
+                let server_read = server_connected_ids.read().await;
+                for id in server_read.iter() {
+                    mdns.update_device_heartbeat(id);
+                }
+            }
+
             // 获取当前发现的设备列表
             let devices = mdns.get_devices();
+            debug!("设备发现周期: 共发现 {} 台设备", devices.len());
 
             for device in devices {
                 // 跳过已连接的设备
@@ -338,14 +370,6 @@ impl App {
                         continue;
                     }
                 }
-
-                // 跳过已经尝试过的设备（避免重复连接尝试）
-                if attempted_devices.contains(&device.id) {
-                    continue;
-                }
-
-                // 记录尝试过的设备
-                attempted_devices.insert(device.id.clone());
 
                 // 尝试连接到新发现的设备
                 info!("发现新设备: {} ({}:{})", device.name, device.addr, device.port);
@@ -408,6 +432,15 @@ impl App {
             match client_for_connect.connect().await {
                 Ok(_) => {
                     info!("成功连接到设备: {}", device_name);
+
+                    // 等待断开通知，然后清理客户端状态
+                    let mut disc_rx = client_for_connect.disconnect_receiver();
+                    let _ = disc_rx.changed().await;
+
+                    // 连接已断开，从 clients 中移除
+                    let mut clients = clients_for_cleanup.write().await;
+                    clients.remove(&device_id_for_connect);
+                    info!("设备 {} 断开连接，已清理客户端状态（将自动重连）", device_name);
                 }
                 Err(e) => {
                     error!("连接设备 {} 失败: {}", device_name, e);
@@ -585,6 +618,8 @@ impl App {
         IpcHandles {
             mdns: Arc::clone(&self.mdns),
             storage_query_tx: self.storage_query_tx.clone(),
+            clients: Arc::clone(&self.clients),
+            server_connected_device_ids: Arc::clone(&self.server_connected_device_ids),
         }
     }
 

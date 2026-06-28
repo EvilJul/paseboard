@@ -13,7 +13,7 @@ fn test_mdns_service_creation() {
     let device_id = Uuid::new_v4().to_string();
     let device_name = "Test Device".to_string();
 
-    let result = MdnsService::new(device_id.clone(), device_name.clone());
+    let result = MdnsService::new(device_id.clone(), device_name.clone(), 9527);
 
     match result {
         Ok(service) => {
@@ -39,7 +39,7 @@ fn test_mdns_registration() {
     let device_id = Uuid::new_v4().to_string();
     let device_name = "Test Device Registration".to_string();
 
-    match MdnsService::new(device_id, device_name) {
+    match MdnsService::new(device_id, device_name, 9527) {
         Ok(service) => {
             println!("✓ mDNS 服务已创建");
             
@@ -65,7 +65,7 @@ fn test_device_list_empty() {
     let device_id = Uuid::new_v4().to_string();
     let device_name = "Test Empty List".to_string();
 
-    if let Ok(service) = MdnsService::new(device_id, device_name) {
+    if let Ok(service) = MdnsService::new(device_id, device_name, 9527) {
         let devices = service.get_devices();
         assert_eq!(devices.len(), 0, "初始设备列表应该为空");
         println!("✓ 初始设备列表为空");
@@ -83,7 +83,7 @@ async fn test_two_instances_discovery() {
     let device1_id = Uuid::new_v4().to_string();
     let device1_name = "Device-1".to_string();
     
-    let service1 = match MdnsService::new(device1_id.clone(), device1_name.clone()) {
+    let service1 = match MdnsService::new(device1_id.clone(), device1_name.clone(), 9527) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("跳过测试：无法创建 mDNS 服务: {}", e);
@@ -111,7 +111,7 @@ async fn test_two_instances_discovery() {
     let device2_id = Uuid::new_v4().to_string();
     let device2_name = "Device-2".to_string();
     
-    let service2 = match MdnsService::new(device2_id.clone(), device2_name.clone()) {
+    let service2 = match MdnsService::new(device2_id.clone(), device2_name.clone(), 9527) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("无法创建第二个 mDNS 服务: {}", e);

@@ -18,6 +18,8 @@ use log::info;
 use std::sync::Arc;
 use tauri::Manager;
 
+use utils::console_logger::{CompositeLogger, LogBuffer, LogEntry};
+
 /// 设备信息（用于 IPC 返回）
 #[derive(Debug, Clone, serde::Serialize)]
 struct DeviceInfo {
@@ -27,6 +29,7 @@ struct DeviceInfo {
     port: u16,
     last_seen: u64,
     is_online: bool,
+    is_connected: bool,
 }
 
 impl From<DeviceSnapshot> for DeviceInfo {
@@ -39,6 +42,7 @@ impl From<DeviceSnapshot> for DeviceInfo {
             port: d.port,
             last_seen: d.last_seen,
             is_online,
+            is_connected: false,
         }
     }
 }
@@ -70,11 +74,41 @@ impl From<crate::clipboard::storage::HistoryItem> for HistoryItem {
 /// 全局应用句柄（用于在 IPC 命令中访问已发现的设备和历史记录）
 pub type AppState = Arc<IpcHandles>;
 
+/// 复制文本到系统粘贴板（绕过前端 IPC ACL 权限检查）
+#[tauri::command]
+async fn copy_to_clipboard(content: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|e| format!("打开粘贴板失败: {}", e))?;
+        clipboard.set_text(content)
+            .map_err(|e| format!("复制失败: {}", e))
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
+}
+
 /// 查询设备列表 IPC 命令
 #[tauri::command]
 async fn get_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
-    let snapshots: Vec<DeviceSnapshot> = state.mdns.get_devices().into_iter().map(Into::into).collect();
-    Ok(snapshots.into_iter().map(DeviceInfo::from).collect())
+    let mdns_devices: Vec<DeviceSnapshot> = state.mdns.get_devices().into_iter().map(Into::into).collect();
+    let clients = state.clients.read().await;
+    let server_ids = state.server_connected_device_ids.read().await;
+
+    let result: Vec<DeviceInfo> = mdns_devices.into_iter().map(|snap| {
+        let in_clients = clients.contains_key(&snap.id);
+        let in_server = server_ids.contains(&snap.id);
+        let is_connected = in_clients || in_server;
+        let mut info = DeviceInfo::from(snap);
+        info.is_connected = is_connected;
+        info
+    }).collect();
+
+    for dev in &result {
+        info!("get_devices: {} (id={}, addr={}), is_online={}, is_connected={}",
+              dev.name, dev.id, dev.addr, dev.is_online, dev.is_connected);
+    }
+
+    Ok(result)
 }
 
 /// 查询历史记录 IPC 命令（最近 100 条）
@@ -109,9 +143,22 @@ fn open_devtools(window: tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
+/// 获取控制台日志
+#[tauri::command]
+fn get_console_logs(state: tauri::State<'_, LogBuffer>) -> Result<Vec<LogEntry>, String> {
+    Ok(state.snapshot())
+}
+
 fn main() {
-    // 初始化日志系统
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // 初始化日志系统（同时写内存环形缓存 + stderr）
+    let log_buffer: LogBuffer = {
+        let buffer = LogBuffer::new(500);
+        let logger = CompositeLogger::new(buffer.clone());
+        log::set_boxed_logger(Box::new(logger))
+            .map(|()| log::set_max_level(log::LevelFilter::Info))
+            .expect("设置 Logger 失败");
+        buffer
+    };
 
     info!("PaseBoard 启动中...");
 
@@ -146,7 +193,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_devices,
             get_history,
-            open_devtools
+            open_devtools,
+            get_console_logs,
+            copy_to_clipboard,
         ])
         .setup(move |app| {
             // 创建系统托盘
@@ -183,6 +232,12 @@ fn main() {
                     // （避免 App 中非 Send/Sync 字段导致状态注册失败）
                     let ipc_handles = Arc::new(app.ipc_handles());
                     app_handle.manage(ipc_handles);
+
+                    // 注册日志缓存到 Tauri 状态（供前端 get_console_logs 调用）
+                    {
+                        let lb = log_buffer.clone();
+                        app_handle.manage(lb);
+                    }
 
                     // 运行应用主循环
                     if let Err(e) = app.run().await {
