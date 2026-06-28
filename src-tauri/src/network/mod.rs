@@ -5,6 +5,8 @@
 // - WebSocket 服务端和客户端
 // - 消息协议定义与编解码
 
+pub mod crypto;
+pub mod identity;
 pub mod mdns;
 pub mod message;
 pub mod websocket_common;

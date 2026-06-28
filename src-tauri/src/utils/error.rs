@@ -51,4 +51,12 @@ pub enum StorageError {
     /// 数据库操作失败（自动从 rusqlite::Error 转换）
     #[error("数据库错误: {0}")]
     DatabaseError(#[from] rusqlite::Error),
+
+    /// 密钥链操作失败
+    #[error("密钥链错误: {0}")]
+    KeychainError(String),
+
+    /// 密钥文件操作失败
+    #[error("密钥文件错误: {0}")]
+    KeyFileError(String),
 }

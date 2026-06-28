@@ -42,6 +42,17 @@ pub enum MessageType {
         /// Unix 时间戳（秒）
         timestamp: i64,
     },
+
+    /// 加密消息（非对称加密后的载荷）
+    #[serde(rename = "encrypted")]
+    Encrypted {
+        /// 12 字节随机 nonce
+        nonce: Vec<u8>,
+        /// AES-256-GCM 加密后的密文
+        ciphertext: Vec<u8>,
+        /// 发送方 X25519 公钥（32 字节）
+        public_key: Vec<u8>,
+    },
 }
 
 /// WebSocket 消息
@@ -95,6 +106,7 @@ impl Message {
     pub fn uuid(&self) -> Option<&str> {
         match &self.msg_type {
             MessageType::Clipboard { uuid, .. } => Some(uuid),
+            MessageType::Encrypted { .. } => None,
             _ => None,
         }
     }
@@ -105,6 +117,7 @@ impl Message {
             MessageType::Clipboard { device_id, .. }
             | MessageType::Heartbeat { device_id, .. }
             | MessageType::HeartbeatAck { device_id, .. } => device_id,
+            MessageType::Encrypted { .. } => "unknown",
         }
     }
 
@@ -114,6 +127,7 @@ impl Message {
             MessageType::Clipboard { timestamp, .. }
             | MessageType::Heartbeat { timestamp, .. }
             | MessageType::HeartbeatAck { timestamp, .. } => *timestamp,
+            MessageType::Encrypted { .. } => 0,
         }
     }
 
@@ -121,6 +135,7 @@ impl Message {
     pub fn content(&self) -> Option<&str> {
         match &self.msg_type {
             MessageType::Clipboard { content, .. } => Some(content),
+            MessageType::Encrypted { .. } => None,
             _ => None,
         }
     }
@@ -138,6 +153,38 @@ impl Message {
     /// 判断是否为粘贴板消息
     pub fn is_clipboard(&self) -> bool {
         matches!(self.msg_type, MessageType::Clipboard { .. })
+    }
+
+    /// 判断是否为加密消息
+    pub fn is_encrypted(&self) -> bool {
+        matches!(self.msg_type, MessageType::Encrypted { .. })
+    }
+
+    /// 创建加密消息
+    pub fn new_encrypted(
+        nonce: Vec<u8>,
+        ciphertext: Vec<u8>,
+        public_key: Vec<u8>,
+    ) -> Self {
+        Self {
+            msg_type: MessageType::Encrypted {
+                nonce,
+                ciphertext,
+                public_key,
+            },
+        }
+    }
+
+    /// 获取加密消息的载荷字段
+    pub fn encrypted_payload(&self) -> Option<(&[u8], &[u8], &[u8])> {
+        match &self.msg_type {
+            MessageType::Encrypted {
+                nonce,
+                ciphertext,
+                public_key,
+            } => Some((nonce, ciphertext, public_key)),
+            _ => None,
+        }
     }
 
     /// 序列化为 JSON 字符串
@@ -162,6 +209,12 @@ impl Message {
             | MessageType::HeartbeatAck { device_id, .. } => {
                 device_id.len() + 50
             }
+            MessageType::Encrypted {
+                nonce,
+                ciphertext,
+                public_key,
+                ..
+            } => nonce.len() + ciphertext.len() + public_key.len() + 100,
         }
     }
 }

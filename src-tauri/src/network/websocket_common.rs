@@ -7,6 +7,7 @@
 // - 重连策略计算
 
 use crate::utils::error::NetworkError;
+use super::crypto::{CryptoSession, CryptoTransport, EncryptedPayload};
 use super::message::Message;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -119,6 +120,101 @@ pub fn decode_message(ws_msg: WsMessage) -> Result<Option<Message>, NetworkError
 pub fn calculate_reconnect_delay(attempt: u32) -> u64 {
     let multiplier = 2u64.pow(attempt);
     INITIAL_RECONNECT_DELAY_SECS * multiplier
+}
+
+// ============================================================
+// 加密消息辅助函数
+// ============================================================
+
+/// 将应用层消息加密编码为 WebSocket 文本消息
+///
+/// 使用加密层的 session 对消息 payload 进行 AES-256-GCM 加密，
+/// 然后封装为加密消息类型发送。
+pub fn encode_encrypted_message(
+    msg: &Message,
+    crypto: &CryptoTransport,
+    session: &CryptoSession,
+) -> Result<WsMessage, NetworkError> {
+    // 序列化原始消息
+    let plaintext = msg
+        .to_json()
+        .map_err(|e| NetworkError::MessageParseFailed(format!("序列化失败: {}", e)))?;
+
+    // 检查原始消息大小
+    check_message_size(msg)?;
+
+    // 加密
+    let payload = crypto
+        .encrypt(session, &plaintext)
+        .map_err(|e| NetworkError::MessageParseFailed(format!("加密失败: {}", e)))?;
+
+    // 封装为加密消息
+    let enc_msg = Message::new_encrypted(payload.nonce, payload.ciphertext, payload.public_key);
+
+    // 序列化为 JSON
+    let json = enc_msg
+        .to_json()
+        .map_err(|e| NetworkError::MessageParseFailed(format!("序列化加密消息失败: {}", e)))?;
+
+    Ok(WsMessage::Text(json))
+}
+
+/// 解密 WebSocket 消息
+///
+/// 如果消息是加密类型，解密后返回内部消息。
+/// 如果消息是普通类型，直接返回。
+/// 如果消息无法解码，返回错误。
+pub fn decrypt_ws_message(
+    ws_msg: WsMessage,
+    crypto: &CryptoTransport,
+    session: &mut CryptoSession,
+    local_secret: &[u8; 32],
+) -> Result<Option<Message>, NetworkError> {
+    match ws_msg {
+        WsMessage::Text(text) => {
+            // 先解析为 Message
+            let msg = Message::from_json(&text).map_err(|e| {
+                NetworkError::MessageParseFailed(format!("JSON 解析失败: {}", e))
+            })?;
+
+            if msg.is_encrypted() {
+                // 解密加密消息
+                let (nonce, ciphertext, public_key) = msg.encrypted_payload().ok_or(
+                    NetworkError::MessageParseFailed("无法提取加密载荷".to_string()),
+                )?;
+
+                let payload = EncryptedPayload {
+                    nonce: nonce.to_vec(),
+                    ciphertext: ciphertext.to_vec(),
+                    public_key: public_key.to_vec(),
+                };
+
+                let plaintext = crypto
+                    .decrypt(session, &payload, local_secret)
+                    .map_err(|e| {
+                        NetworkError::MessageParseFailed(format!("解密失败: {}", e))
+                    })?;
+
+                // 解析解密后的内部消息
+                let inner_msg = Message::from_json(&plaintext).map_err(|e| {
+                    NetworkError::MessageParseFailed(format!("解密内容解析失败: {}", e))
+                })?;
+
+                Ok(Some(inner_msg))
+            } else {
+                // 非加密消息，正常解析
+                check_message_size(&msg)?;
+                Ok(Some(msg))
+            }
+        }
+        WsMessage::Binary(_) => Err(NetworkError::MessageParseFailed(
+            "不支持二进制消息".to_string(),
+        )),
+        WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Close(_) => Ok(None),
+        WsMessage::Frame(_) => Err(NetworkError::MessageParseFailed(
+            "收到未解析的原始帧".to_string(),
+        )),
+    }
 }
 
 /// 检查心跳是否超时

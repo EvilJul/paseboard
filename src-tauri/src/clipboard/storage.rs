@@ -1,19 +1,128 @@
 // 历史记录存储模块
 //
 // 职责：
-// - SQLite 数据库初始化和管理
+// - SQLite 数据库初始化和管理（SQLCipher 加密）
+// - 密钥管理（优先密钥链，回退密钥文件）
 // - 历史记录插入、查询
 // - 容量管理（最多 1000 条，超过则删除最旧的 100 条）
 // - 索引优化（timestamp DESC, content_hash）
 
 use crate::utils::error::StorageError;
+use base64::Engine;
+use rand::Rng;
 use rusqlite::{Connection, params};
-use sha2::{Sha256, Digest};
+use sha2::Sha256;
 use std::path::Path;
+
+/// 密钥管理器
+///
+/// 优先从系统密钥链获取密钥，回退到文件密钥。
+/// 首次运行时生成随机 32 字节密钥并存储。
+pub struct KeyManager {
+    key: String,
+    storage_type: String,
+}
+
+impl KeyManager {
+    /// 创建密钥管理器
+    ///
+    /// 尝试从系统密钥链加载密钥，回退到密钥文件。
+    /// 如果都不存在，生成新密钥并保存。
+    pub fn new(db_dir: &Path) -> Result<Self, StorageError> {
+        // 先尝试从系统密钥链加载
+        if let Ok(key) = Self::load_from_keychain() {
+            return Ok(Self { key, storage_type: "keychain".to_string() });
+        }
+
+        // 回退到文件密钥
+        let key_path = db_dir.join("db.key");
+        if key_path.exists() {
+            let key = std::fs::read_to_string(&key_path)
+                .map_err(|e| StorageError::KeyFileError(e.to_string()))?;
+            return Ok(Self { key, storage_type: "file".to_string() });
+        }
+
+        // 首次运行，生成新密钥
+        let key = Self::generate_key();
+
+        // 尝试保存到密钥链
+        if Self::save_to_keychain(&key).is_ok() {
+            return Ok(Self { key, storage_type: "keychain".to_string() });
+        }
+
+        // 回退到文件存储
+        std::fs::write(&key_path, &key)
+            .map_err(|e| StorageError::KeyFileError(e.to_string()))?;
+        Ok(Self { key, storage_type: "file".to_string() })
+    }
+
+    /// 获取密钥（base64 编码）
+    pub fn get_key(&self) -> &str {
+        &self.key
+    }
+
+    /// 获取密钥存储类型（"keychain" 或 "file"）
+    pub fn key_type(&self) -> &str {
+        &self.storage_type
+    }
+
+    /// 生成随机 32 字节密钥并 base64 编码
+    fn generate_key() -> String {
+        let mut key_bytes = [0u8; 32];
+        rand::thread_rng().fill(&mut key_bytes);
+        base64::engine::general_purpose::STANDARD.encode(&key_bytes)
+    }
+
+    /// 从系统密钥链加载密钥
+    ///
+    /// macOS 上使用 `security` CLI 访问系统钥匙串。
+    /// 其他平台暂不支持密钥链，返回错误以回退到文件密钥。
+    fn load_from_keychain() -> Result<String, StorageError> {
+        #[cfg(target_os = "macos")]
+        {
+            let output = std::process::Command::new("security")
+                .args(["find-generic-password", "-s", "PaseBoard", "-a", "db-key", "-w"])
+                .output()
+                .map_err(|e| StorageError::KeychainError(e.to_string()))?;
+
+            if output.status.success() {
+                let password = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !password.is_empty() {
+                    return Ok(password);
+                }
+            }
+            Err(StorageError::KeychainError("钥匙串中未找到密钥".to_string()))
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        Err(StorageError::KeychainError("不支持的密钥链平台".to_string()))
+    }
+
+    /// 保存密钥到系统密钥链
+    fn save_to_keychain(key: &str) -> Result<(), StorageError> {
+        #[cfg(target_os = "macos")]
+        {
+            let output = std::process::Command::new("security")
+                .args(["add-generic-password", "-s", "PaseBoard", "-a", "db-key", "-w", key, "-U"])
+                .output()
+                .map_err(|e| StorageError::KeychainError(e.to_string()))?;
+
+            if output.status.success() {
+                return Ok(());
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(StorageError::KeychainError(format!("security 命令失败: {}", stderr)))
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        Err(StorageError::KeychainError("不支持的密钥链平台".to_string()))
+    }
+}
 
 /// 历史记录存储管理器
 pub struct HistoryStorage {
     conn: Connection,
+    key_type: String,
 }
 
 /// 历史记录项
@@ -40,16 +149,29 @@ impl HistoryStorage {
         // 确保数据库目录存在
         if let Some(parent) = db_path.as_ref().parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                .map_err(|e| StorageError::KeyFileError(e.to_string()))?;
         }
 
-        // 打开数据库连接
+        // 初始化密钥管理器
+        let key_manager = KeyManager::new(db_path.as_ref().parent().unwrap_or_else(|| Path::new(".")))?;
+        let key = key_manager.get_key();
+
+        // 打开加密数据库连接
         let conn = Connection::open(db_path)?;
+        conn.execute_batch(&format!(
+            "PRAGMA cipher_compatibility = 4; PRAGMA key = '{}';",
+            key
+        ))?;
 
         // 初始化数据库表和索引
         Self::init_database(&conn)?;
 
-        Ok(Self { conn })
+        Ok(Self { conn, key_type: key_manager.key_type().to_string() })
+    }
+
+    /// 获取密钥存储类型（用于 UI 显示）
+    pub fn key_type(&self) -> &str {
+        &self.key_type
     }
 
     /// 初始化数据库表结构和索引
@@ -242,6 +364,7 @@ impl HistoryStorage {
 
     /// 计算内容的 SHA256 哈希
     fn compute_hash(content: &str) -> String {
+        use sha2::Digest;
         let mut hasher = Sha256::new();
         hasher.update(content.as_bytes());
         format!("{:x}", hasher.finalize())
@@ -269,10 +392,11 @@ impl HistoryStorage {
 mod tests {
     use super::*;
 
-    /// 创建临时数据库用于测试
+    /// 创建临时数据库用于测试（每个测试独立目录，避免密钥文件冲突）
     fn create_temp_storage() -> HistoryStorage {
-        let temp_dir = std::env::temp_dir();
-        let db_path = temp_dir.join(format!("test_history_{}.db", uuid::Uuid::new_v4()));
+        let temp_dir = std::env::temp_dir().join(format!("paseboard_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("history.db");
         HistoryStorage::new(&db_path).unwrap()
     }
 
@@ -522,5 +646,59 @@ mod tests {
         assert_eq!(items[0].size, 12); // "你好世界" = 12 字节（UTF-8 编码）
         assert_eq!(items[1].size, 5);  // "Hello" = 5 字节
         assert_eq!(items[2].size, 1);  // "a" = 1 字节
+    }
+
+    #[test]
+    fn test_key_generation_and_base64() {
+        let key = KeyManager::generate_key();
+
+        // base64 编码的 32 字节密钥应为 44 字符（含填充）
+        assert_eq!(key.len(), 44);
+
+        // 验证是合法 base64 且解码后为 32 字节
+        let decoded = base64::engine::general_purpose::STANDARD.decode(&key).unwrap();
+        assert_eq!(decoded.len(), 32);
+    }
+
+    #[test]
+    fn test_key_type_valid() {
+        let storage = create_temp_storage();
+        let kt = storage.key_type();
+        // 测试环境可能无密钥链，但返回值必须有效
+        assert!(kt == "keychain" || kt == "file");
+    }
+
+    #[test]
+    fn test_encrypted_db_insert_and_query() {
+        let mut storage = create_temp_storage();
+
+        let id = storage.insert("加密存储测试", "device-enc", "加密测试").unwrap();
+        assert!(id > 0);
+
+        let items = storage.query_recent(10).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].content, "加密存储测试");
+        assert_eq!(items[0].device_id, "device-enc");
+    }
+
+    #[test]
+    fn test_reopen_encrypted_db() {
+        let temp_dir = std::env::temp_dir().join(format!("paseboard_reopen_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("history.db");
+
+        // 第一次打开，插入数据
+        {
+            let mut storage = HistoryStorage::new(&db_path).unwrap();
+            storage.insert("跨会话数据", "device-1", "设备1").unwrap();
+        }
+
+        // 第二次打开，验证数据仍然存在（使用相同密钥文件）
+        {
+            let storage = HistoryStorage::new(&db_path).unwrap();
+            let items = storage.query_recent(10).unwrap();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].content, "跨会话数据");
+        }
     }
 }

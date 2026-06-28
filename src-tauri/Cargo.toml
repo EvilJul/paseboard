@@ -19,9 +19,15 @@ tokio = { version = "1.35.0", features = ["full"] }
 tokio-tungstenite = "0.21.0"
 futures-util = "0.3.30"
 mdns-sd = "0.7.5"
-rusqlite = { version = "0.30.0", features = ["bundled"] }
+rusqlite = { version = "0.31.0", features = ["bundled-sqlcipher"] }
 uuid = { version = "1.6.1", features = ["v4", "serde"] }
 sha2 = "0.10.8"
+ed25519-dalek = { version = "2.1.1", features = ["pkcs8", "pem"] }
+x25519-dalek = "2.0.1"
+aes-gcm = "0.10.3"
+hkdf = "0.12.4"
+rand = "0.8.5"
+base64 = "0.22.1"
 thiserror = "1.0.50"
 anyhow = "1.0.75"
 log = "0.4.20"

@@ -2,7 +2,7 @@
 //
 // 测试 mDNS 服务注册和发现功能
 
-use paseboard::network::mdns::MdnsService;
+use paseboard::network::mdns::{MdnsService, CRYPTO_VERSION};
 use paseboard::config::AppConfig;
 use std::time::Duration;
 use uuid::Uuid;
@@ -13,14 +13,14 @@ fn test_mdns_service_creation() {
     let device_id = Uuid::new_v4().to_string();
     let device_name = "Test Device".to_string();
 
-    let result = MdnsService::new(device_id.clone(), device_name.clone(), 9527);
+    let result = MdnsService::new(device_id.clone(), device_name.clone(), 9527, None, CRYPTO_VERSION.to_string());
 
     match result {
         Ok(service) => {
             println!("✓ mDNS 服务创建成功");
             println!("  设备 ID: {}", device_id);
             println!("  设备名称: {}", device_name);
-            println!("  分配端口: {}", service.get_port());
+            println!("  端口: {}", service.get_port());
             
             assert!(service.get_port() >= 9527 && service.get_port() <= 9537);
         }
@@ -39,7 +39,7 @@ fn test_mdns_registration() {
     let device_id = Uuid::new_v4().to_string();
     let device_name = "Test Device Registration".to_string();
 
-    match MdnsService::new(device_id, device_name, 9527) {
+    match MdnsService::new(device_id, device_name, 0, None, CRYPTO_VERSION.to_string()) {
         Ok(service) => {
             println!("✓ mDNS 服务已创建");
             
@@ -65,7 +65,7 @@ fn test_device_list_empty() {
     let device_id = Uuid::new_v4().to_string();
     let device_name = "Test Empty List".to_string();
 
-    if let Ok(service) = MdnsService::new(device_id, device_name, 9527) {
+    if let Ok(service) = MdnsService::new(device_id, device_name, 0, None, CRYPTO_VERSION.to_string()) {
         let devices = service.get_devices();
         assert_eq!(devices.len(), 0, "初始设备列表应该为空");
         println!("✓ 初始设备列表为空");
@@ -83,7 +83,7 @@ async fn test_two_instances_discovery() {
     let device1_id = Uuid::new_v4().to_string();
     let device1_name = "Device-1".to_string();
     
-    let service1 = match MdnsService::new(device1_id.clone(), device1_name.clone(), 9527) {
+    let service1 = match MdnsService::new(device1_id.clone(), device1_name.clone(), 0, None, CRYPTO_VERSION.to_string()) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("跳过测试：无法创建 mDNS 服务: {}", e);
@@ -111,7 +111,7 @@ async fn test_two_instances_discovery() {
     let device2_id = Uuid::new_v4().to_string();
     let device2_name = "Device-2".to_string();
     
-    let service2 = match MdnsService::new(device2_id.clone(), device2_name.clone(), 9527) {
+    let service2 = match MdnsService::new(device2_id.clone(), device2_name.clone(), 0, None, CRYPTO_VERSION.to_string()) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("无法创建第二个 mDNS 服务: {}", e);
