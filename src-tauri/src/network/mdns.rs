@@ -523,7 +523,7 @@ mod tests {
         // 测试端口检查逻辑（实际端口可用性取决于系统）
         let available = MdnsService::is_port_available(9527);
         // 只验证函数能正常返回，不验证具体结果
-        assert!(available || !available);
+        let _ = available;
     }
 
     #[test]
