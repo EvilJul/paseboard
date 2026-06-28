@@ -322,7 +322,6 @@ impl App {
         info!("设备发现流程已启动");
 
         let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(5));
-        let mut attempted_devices: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         loop {
             ticker.tick().await;
@@ -338,14 +337,6 @@ impl App {
                         continue;
                     }
                 }
-
-                // 跳过已经尝试过的设备（避免重复连接尝试）
-                if attempted_devices.contains(&device.id) {
-                    continue;
-                }
-
-                // 记录尝试过的设备
-                attempted_devices.insert(device.id.clone());
 
                 // 尝试连接到新发现的设备
                 info!("发现新设备: {} ({}:{})", device.name, device.addr, device.port);
@@ -408,6 +399,15 @@ impl App {
             match client_for_connect.connect().await {
                 Ok(_) => {
                     info!("成功连接到设备: {}", device_name);
+
+                    // 等待断开通知，然后清理客户端状态
+                    let mut disc_rx = client_for_connect.disconnect_receiver();
+                    let _ = disc_rx.changed().await;
+
+                    // 连接已断开，从 clients 中移除
+                    let mut clients = clients_for_cleanup.write().await;
+                    clients.remove(&device_id_for_connect);
+                    info!("设备 {} 断开连接，已清理客户端状态（将自动重连）", device_name);
                 }
                 Err(e) => {
                     error!("连接设备 {} 失败: {}", device_name, e);

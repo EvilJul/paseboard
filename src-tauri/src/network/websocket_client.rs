@@ -16,7 +16,7 @@ use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, watch, RwLock};
 use tokio::time::{interval, sleep, Duration};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -48,6 +48,8 @@ pub struct WebSocketClient {
     message_tx: mpsc::UnboundedSender<Message>,
     /// 上次收到心跳的时间戳
     last_heartbeat: Arc<RwLock<i64>>,
+    /// 断开通知发送端
+    disconnect_tx: watch::Sender<bool>,
 }
 
 impl WebSocketClient {
@@ -65,6 +67,7 @@ impl WebSocketClient {
     ) -> (Self, mpsc::UnboundedReceiver<Message>) {
         let (send_tx, send_rx) = mpsc::unbounded_channel();
         let (message_tx, message_rx) = mpsc::unbounded_channel();
+        let (disconnect_tx, _) = watch::channel(false);
 
         let client = Self {
             server_url,
@@ -74,6 +77,7 @@ impl WebSocketClient {
             internal_send_tx: Arc::new(RwLock::new(None)),
             message_tx,
             last_heartbeat: Arc::new(RwLock::new(chrono::Utc::now().timestamp())),
+            disconnect_tx,
         };
 
         // 启动发送任务
@@ -158,6 +162,7 @@ impl WebSocketClient {
         let last_heartbeat = Arc::clone(&self.last_heartbeat);
         let device_id = self.device_id.clone();
         let internal_send_tx = Arc::clone(&self.internal_send_tx);
+        let disconnect_tx = self.disconnect_tx.clone();
 
         tokio::spawn(async move {
             let (mut ws_sink, mut ws_stream) = ws_stream.split();
@@ -243,6 +248,7 @@ impl WebSocketClient {
                 let mut state = state.write().await;
                 *state = ConnectionState::Disconnected;
             }
+            let _ = disconnect_tx.send(true);
             info!("WebSocket 连接已断开");
         });
     }
@@ -342,6 +348,11 @@ impl WebSocketClient {
     pub async fn is_connected(&self) -> bool {
         let state = self.state.read().await;
         *state == ConnectionState::Connected
+    }
+
+    /// 获取断开通知接收端
+    pub fn disconnect_receiver(&self) -> watch::Receiver<bool> {
+        self.disconnect_tx.subscribe()
     }
 
     /// 获取服务端地址
