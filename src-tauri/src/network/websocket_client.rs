@@ -176,6 +176,15 @@ impl WebSocketClient {
                 *internal_tx = Some(tx);
             }
 
+            // 连接建立后立即发送初始心跳，让服务端知道本设备 ID
+            let init_hb = Message::new_heartbeat(device_id.clone());
+            if let Ok(ws_msg) = encode_message(&init_hb) {
+                let internal_tx_read = internal_send_tx.read().await;
+                if let Some(tx) = internal_tx_read.as_ref() {
+                    let _ = tx.send(ws_msg);
+                }
+            }
+
             // 启动写任务
             let write_task = tokio::spawn(async move {
                 while let Some(msg) = rx.recv().await {
