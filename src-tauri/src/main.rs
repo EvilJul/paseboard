@@ -94,12 +94,21 @@ async fn get_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo
     let clients = state.clients.read().await;
     let server_ids = state.server_connected_device_ids.read().await;
 
-    Ok(mdns_devices.into_iter().map(|snap| {
-        let is_connected = clients.contains_key(&snap.id) || server_ids.contains(&snap.id);
+    let result: Vec<DeviceInfo> = mdns_devices.into_iter().map(|snap| {
+        let in_clients = clients.contains_key(&snap.id);
+        let in_server = server_ids.contains(&snap.id);
+        let is_connected = in_clients || in_server;
         let mut info = DeviceInfo::from(snap);
         info.is_connected = is_connected;
         info
-    }).collect())
+    }).collect();
+
+    for dev in &result {
+        info!("get_devices: {} (id={}, addr={}), is_online={}, is_connected={}",
+              dev.name, dev.id, dev.addr, dev.is_online, dev.is_connected);
+    }
+
+    Ok(result)
 }
 
 /// 查询历史记录 IPC 命令（最近 100 条）

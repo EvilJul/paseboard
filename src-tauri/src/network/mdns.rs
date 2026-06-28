@@ -247,14 +247,22 @@ impl MdnsService {
             .and_then(|val| Some(val.val_str().to_string()))?;
 
         // 获取设备名称（服务实例名称）
-        let device_name = info.get_fullname()
-            .trim_end_matches(SERVICE_TYPE)
-            .trim_end_matches('.')
+        // 注意：trim_end_matches 是按字符集匹配，不能用于子串匹配
+        let fullname = info.get_fullname();
+        let suffix = SERVICE_TYPE.strip_suffix('.').unwrap_or(SERVICE_TYPE);
+        let device_name = fullname
+            .strip_suffix(suffix)
+            .or_else(|| fullname.strip_suffix(SERVICE_TYPE))
+            .map(|n| n.strip_suffix('.').unwrap_or(n))
+            .unwrap_or(&fullname)
             .to_string();
 
-        // 获取 IP 地址（mdns-sd 0.7.5 返回 Ipv4Addr）
+        // 获取 IP 地址（过滤 loopback，优先选择非回环的 IPv4）
         let addresses = info.get_addresses();
-        let addr = addresses.iter().next()?;
+        let addr = addresses.iter()
+            .filter(|a| !a.is_loopback())
+            .next()
+            .or_else(|| addresses.iter().next())?;
         let addr = IpAddr::V4(*addr);
 
         // 获取端口

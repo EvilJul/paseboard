@@ -340,6 +340,7 @@ impl App {
 
             // 获取当前发现的设备列表
             let devices = mdns.get_devices();
+            debug!("设备发现周期: 共发现 {} 台设备", devices.len());
 
             for device in devices {
                 // 跳过已连接的设备
