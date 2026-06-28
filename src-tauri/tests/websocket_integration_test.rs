@@ -185,6 +185,38 @@ mod integration_tests {
         assert!(client.is_connected().await, "心跳后连接应该仍然活跃");
     }
 
+    /// 测试：服务端追踪已连接设备 ID
+    #[tokio::test]
+    async fn test_server_tracks_connected_device_ids() {
+        let connected_ids = make_connected_ids();
+        let (server, _server_rx) = WebSocketServer::new(
+            "127.0.0.1:19533".to_string(),
+            "server-device".to_string(),
+            connected_ids.clone(),
+        )
+        .unwrap();
+
+        tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+
+        sleep(Duration::from_millis(100)).await;
+
+        // 客户端连接后自动发送初始心跳
+        let (client, _client_rx) = WebSocketClient::new(
+            "ws://127.0.0.1:19533".to_string(),
+            "client-device".to_string(),
+        );
+        client.connect().await.unwrap();
+
+        // 等待初始心跳被服务端处理
+        sleep(Duration::from_millis(500)).await;
+
+        // 验证 connected_device_ids 包含客户端 ID
+        let ids = connected_ids.read().await;
+        assert!(ids.contains("client-device"), "服务端应注册客户端设备 ID: {:?}", *ids);
+    }
+
     /// 测试：消息大小限制
     #[tokio::test]
     async fn test_content_size_limit() {

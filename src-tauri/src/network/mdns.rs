@@ -621,6 +621,31 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_local_ipv4() {
+        let ip = MdnsService::detect_local_ipv4();
+        match ip {
+            Some(addr) => {
+                // 验证返回的是有效 IPv4 地址
+                assert!(!addr.is_empty(), "IP 地址不应为空");
+                assert!(!addr.starts_with("127."), "不应返回回环地址: {}", addr);
+
+                // 验证是私有地址或 CGNAT 地址
+                let valid = addr.starts_with("10.")
+                    || addr.starts_with("192.168.")
+                    || addr.starts_with("172.1")
+                    || addr.starts_with("172.2")
+                    || addr.starts_with("172.3")
+                    || addr.starts_with("100.");
+                assert!(valid, "IP {} 不是私有地址", addr);
+            }
+            None => {
+                // 没有网络接口时允许失败
+                println!("detect_local_ipv4 返回 None（无网络接口）");
+            }
+        }
+    }
+
+    #[test]
     fn test_service_registration() {
         let device_id = Uuid::new_v4().to_string();
         let device_name = "Test Device".to_string();

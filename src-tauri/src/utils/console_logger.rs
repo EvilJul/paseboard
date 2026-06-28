@@ -71,3 +71,77 @@ impl log::Log for CompositeLogger {
 
     fn flush(&self) {}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use log::Log;
+
+    #[test]
+    fn test_log_buffer_push_and_snapshot() {
+        let buffer = LogBuffer::new(10);
+        assert!(buffer.snapshot().is_empty());
+
+        buffer.push(LogEntry {
+            level: "INFO".into(),
+            message: "test message".into(),
+            timestamp: "2024-01-01T00:00:00Z".into(),
+        });
+
+        let snap = buffer.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].level, "INFO");
+        assert_eq!(snap[0].message, "test message");
+    }
+
+    #[test]
+    fn test_log_buffer_capacity() {
+        let buffer = LogBuffer::new(3);
+        for i in 0..5 {
+            buffer.push(LogEntry {
+                level: "INFO".into(),
+                message: format!("msg {}", i),
+                timestamp: String::new(),
+            });
+        }
+
+        let snap = buffer.snapshot();
+        assert_eq!(snap.len(), 3);
+        assert_eq!(snap[0].message, "msg 2");
+        assert_eq!(snap[2].message, "msg 4");
+    }
+
+    #[test]
+    fn test_log_buffer_clone_shares_state() {
+        let buffer = LogBuffer::new(10);
+        let cloned = buffer.clone();
+
+        buffer.push(LogEntry {
+            level: "WARN".into(),
+            message: "shared".into(),
+            timestamp: String::new(),
+        });
+
+        // 克隆体应看到同一数据
+        assert_eq!(cloned.snapshot().len(), 1);
+        assert_eq!(cloned.snapshot()[0].message, "shared");
+    }
+
+    #[test]
+    fn test_composite_logger_enabled() {
+        let buffer = LogBuffer::new(10);
+        let logger = CompositeLogger::new(buffer.clone());
+
+        let info_meta = log::Metadata::builder()
+            .level(log::Level::Info)
+            .target("test")
+            .build();
+        let debug_meta = log::Metadata::builder()
+            .level(log::Level::Debug)
+            .target("test")
+            .build();
+
+        assert!(logger.enabled(&info_meta));
+        assert!(!logger.enabled(&debug_meta));
+    }
+}
