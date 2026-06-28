@@ -294,6 +294,7 @@ impl WebSocketClient {
         let send_tx = self.send_tx.clone();
         let last_heartbeat = Arc::clone(&self.last_heartbeat);
         let state = Arc::clone(&self.state);
+        let disconnect_tx = self.disconnect_tx.clone();
 
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
@@ -314,6 +315,7 @@ impl WebSocketClient {
                     error!("服务端心跳超时，连接已断开");
                     let mut state = state.write().await;
                     *state = ConnectionState::Disconnected;
+                    let _ = disconnect_tx.send(true);
                     break;
                 }
 

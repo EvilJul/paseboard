@@ -18,7 +18,7 @@ use crate::clipboard::storage::{HistoryStorage, HistoryItem};
 use crate::clipboard::dedup::DeduplicationService;
 
 use log::{info, warn, error, debug};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use sha2::{Sha256, Digest};
@@ -94,6 +94,8 @@ pub struct App {
     dedup_service: Arc<DeduplicationService>,
     /// 已连接的客户端（设备 ID -> WebSocketClient）
     clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
+    /// 已连接的入站远程设备 ID 集合
+    server_connected_device_ids: Arc<RwLock<HashSet<String>>>,
 }
 
 /// 应用对外暴露给 IPC 命令使用的句柄（轻量、Send + Sync）
@@ -102,6 +104,10 @@ pub struct IpcHandles {
     pub mdns: Arc<MdnsService>,
     /// 历史存储查询通道
     pub storage_query_tx: mpsc::UnboundedSender<StorageQuery>,
+    /// 已连接的出站 WebSocket 客户端
+    pub clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
+    /// 已连接的入站远程设备 ID 集合
+    pub server_connected_device_ids: Arc<RwLock<HashSet<String>>>,
 }
 
 impl App {
@@ -116,6 +122,9 @@ impl App {
     pub async fn new(config: AppConfig, app_handle: tauri::AppHandle) -> anyhow::Result<Self> {
         info!("开始初始化应用...");
 
+        // 创建共享的入站连接设备 ID 集合
+        let server_connected_device_ids: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
+
         // 并行初始化三个独立模块：mDNS、WebSocket Server、Storage
         let mdns_handle = {
             let device_id = config.device_id.clone();
@@ -129,8 +138,9 @@ impl App {
         let ws_server_handle = {
             let bind_addr = format!("0.0.0.0:{}", config.port);
             let device_id = config.device_id.clone();
+            let connected_ids = Arc::clone(&server_connected_device_ids);
             tokio::spawn(async move {
-                WebSocketServer::new(bind_addr, device_id)
+                WebSocketServer::new(bind_addr, device_id, connected_ids)
             })
         };
 
@@ -186,6 +196,7 @@ impl App {
             storage_query_tx,
             dedup_service: Arc::new(dedup_service),
             clients: Arc::new(RwLock::new(HashMap::new())),
+            server_connected_device_ids,
         })
     }
 
@@ -232,6 +243,7 @@ impl App {
             storage_query_tx: _, // 已在 Self 中持有，无须再传递
             dedup_service,
             clients,
+            ..
         } = self;
 
         // 启动 WebSocket 服务端（独立任务）
@@ -585,6 +597,8 @@ impl App {
         IpcHandles {
             mdns: Arc::clone(&self.mdns),
             storage_query_tx: self.storage_query_tx.clone(),
+            clients: Arc::clone(&self.clients),
+            server_connected_device_ids: Arc::clone(&self.server_connected_device_ids),
         }
     }
 

@@ -9,7 +9,14 @@ mod integration_tests {
         websocket_client::WebSocketClient,
         websocket_server::WebSocketServer,
     };
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
     use tokio::time::{sleep, Duration};
+
+    fn make_connected_ids() -> Arc<RwLock<HashSet<String>>> {
+        Arc::new(RwLock::new(HashSet::new()))
+    }
 
     /// 测试：服务端启动并接受客户端连接
     #[tokio::test]
@@ -18,6 +25,7 @@ mod integration_tests {
         let (server, _server_rx) = WebSocketServer::new(
             "127.0.0.1:19527".to_string(),
             "server-device".to_string(),
+            make_connected_ids(),
         )
         .unwrap();
 
@@ -52,6 +60,7 @@ mod integration_tests {
         let (server, mut server_rx) = WebSocketServer::new(
             "127.0.0.1:19528".to_string(),
             "server-device".to_string(),
+            make_connected_ids(),
         )
         .unwrap();
 
@@ -99,6 +108,7 @@ mod integration_tests {
         let (server, _server_rx) = WebSocketServer::new(
             "127.0.0.1:19529".to_string(),
             "server-device".to_string(),
+            make_connected_ids(),
         )
         .unwrap();
 
@@ -149,6 +159,7 @@ mod integration_tests {
         let (server, _server_rx) = WebSocketServer::new(
             "127.0.0.1:19530".to_string(),
             "server-device".to_string(),
+            make_connected_ids(),
         )
         .unwrap();
 
@@ -196,6 +207,7 @@ mod integration_tests {
         let (server, _server_rx) = WebSocketServer::new(
             "127.0.0.1:19532".to_string(),
             "server-device".to_string(),
+            make_connected_ids(),
         )
         .unwrap();
 

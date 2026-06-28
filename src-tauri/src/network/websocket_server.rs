@@ -14,7 +14,7 @@ use super::websocket_common::{
 };
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, info, warn};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -30,6 +30,8 @@ struct ClientConnection {
     last_heartbeat: i64,
     /// 客户端地址
     addr: SocketAddr,
+    /// 设备 ID（首次消息解析后填充）
+    device_id: String,
 }
 
 /// WebSocket 服务端
@@ -42,6 +44,8 @@ pub struct WebSocketServer {
     clients: Arc<RwLock<HashMap<SocketAddr, ClientConnection>>>,
     /// 消息接收通道（发送给应用层）
     message_tx: mpsc::UnboundedSender<Message>,
+    /// 已连接的远程设备 ID 集合（通过服务端接入的）
+    connected_device_ids: Arc<RwLock<HashSet<String>>>,
 }
 
 impl WebSocketServer {
@@ -57,6 +61,7 @@ impl WebSocketServer {
     pub fn new(
         bind_addr: String,
         device_id: String,
+        connected_device_ids: Arc<RwLock<HashSet<String>>>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<Message>), NetworkError> {
         // 同步预绑定端口，确保 mDNS 注册时端口一定可用
         std::net::TcpListener::bind(&bind_addr).map_err(|e| {
@@ -73,6 +78,7 @@ impl WebSocketServer {
             device_id,
             clients: Arc::new(RwLock::new(HashMap::new())),
             message_tx,
+            connected_device_ids,
         };
 
         Ok((server, message_rx))
@@ -132,6 +138,7 @@ impl WebSocketServer {
                     tx,
                     last_heartbeat: chrono::Utc::now().timestamp(),
                     addr,
+                    device_id: String::new(),
                 },
             );
         }
@@ -139,6 +146,7 @@ impl WebSocketServer {
         let clients = Arc::clone(&self.clients);
         let message_tx = self.message_tx.clone();
         let device_id = self.device_id.clone();
+        let connected_device_ids = Arc::clone(&self.connected_device_ids);
 
         // 启动发送任务
         let send_task = tokio::spawn(async move {
@@ -163,8 +171,17 @@ impl WebSocketServer {
                                     let mut clients_lock = clients.write().await;
                                     if let Some(client) = clients_lock.get_mut(&addr) {
                                         client.last_heartbeat = chrono::Utc::now().timestamp();
+                                        if client.device_id.is_empty() {
+                                            let new_id = msg.device_id().to_string();
+                                            client.device_id = new_id.clone();
+                                            drop(clients_lock);
+                                            connected_device_ids.write().await.insert(new_id);
+                                        } else {
+                                            drop(clients_lock);
+                                        }
+                                    } else {
+                                        drop(clients_lock);
                                     }
-                                    drop(clients_lock);
 
                                     // 心跳消息需要响应
                                     if msg.is_heartbeat() {
@@ -177,7 +194,19 @@ impl WebSocketServer {
                                         }
                                     }
                                 } else {
-                                    // 粘贴板消息转发给应用层
+                                    // 粘贴板消息 - 首次消息注册设备 ID
+                                    {
+                                        let mut clients_lock = clients.write().await;
+                                        if let Some(client) = clients_lock.get_mut(&addr) {
+                                            if client.device_id.is_empty() {
+                                                let new_id = msg.device_id().to_string();
+                                                client.device_id = new_id.clone();
+                                                drop(clients_lock);
+                                                connected_device_ids.write().await.insert(new_id);
+                                            }
+                                        }
+                                    }
+                                    // 转发给应用层
                                     if let Err(e) = message_tx.send(msg) {
                                         error!("转发消息到应用层失败: {}", e);
                                         break;
@@ -201,7 +230,11 @@ impl WebSocketServer {
 
             // 连接断开，移除客户端
             let mut clients = clients.write().await;
-            clients.remove(&addr);
+            if let Some(client) = clients.remove(&addr) {
+                if !client.device_id.is_empty() {
+                    connected_device_ids.write().await.remove(&client.device_id);
+                }
+            }
             info!("WebSocket 连接已断开: {}", addr);
         });
 
@@ -285,17 +318,27 @@ impl WebSocketServer {
     pub async fn client_count(&self) -> usize {
         self.clients.read().await.len()
     }
+
+    /// 获取已连接的远程设备 ID 集合引用
+    pub fn get_connected_device_ids_ref(&self) -> Arc<RwLock<HashSet<String>>> {
+        Arc::clone(&self.connected_device_ids)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn make_connected_ids() -> Arc<RwLock<HashSet<String>>> {
+        Arc::new(RwLock::new(HashSet::new()))
+    }
+
     #[tokio::test]
     async fn test_server_creation() {
         let (server, _rx) = WebSocketServer::new(
             "127.0.0.1:9527".to_string(),
             "test-device".to_string(),
+            make_connected_ids(),
         )
         .unwrap();
 
@@ -309,6 +352,7 @@ mod tests {
         let (server, _rx) = WebSocketServer::new(
             "127.0.0.1:9528".to_string(),
             "test-device".to_string(),
+            make_connected_ids(),
         )
         .unwrap();
 

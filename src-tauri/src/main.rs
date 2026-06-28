@@ -29,6 +29,7 @@ struct DeviceInfo {
     port: u16,
     last_seen: u64,
     is_online: bool,
+    is_connected: bool,
 }
 
 impl From<DeviceSnapshot> for DeviceInfo {
@@ -41,6 +42,7 @@ impl From<DeviceSnapshot> for DeviceInfo {
             port: d.port,
             last_seen: d.last_seen,
             is_online,
+            is_connected: false,
         }
     }
 }
@@ -88,8 +90,16 @@ async fn copy_to_clipboard(content: String) -> Result<(), String> {
 /// 查询设备列表 IPC 命令
 #[tauri::command]
 async fn get_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
-    let snapshots: Vec<DeviceSnapshot> = state.mdns.get_devices().into_iter().map(Into::into).collect();
-    Ok(snapshots.into_iter().map(DeviceInfo::from).collect())
+    let mdns_devices: Vec<DeviceSnapshot> = state.mdns.get_devices().into_iter().map(Into::into).collect();
+    let clients = state.clients.read().await;
+    let server_ids = state.server_connected_device_ids.read().await;
+
+    Ok(mdns_devices.into_iter().map(|snap| {
+        let is_connected = clients.contains_key(&snap.id) || server_ids.contains(&snap.id);
+        let mut info = DeviceInfo::from(snap);
+        info.is_connected = is_connected;
+        info
+    }).collect())
 }
 
 /// 查询历史记录 IPC 命令（最近 100 条）

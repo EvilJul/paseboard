@@ -800,8 +800,8 @@
                         <td>${device.name}</td>
                         <td>
                             <div class="status-indicator">
-                                <span class="status-dot ${device.is_online ? 'online' : 'offline'}"></span>
-                                <span>${device.is_online ? '在线' : '离线'}</span>
+                                <span class="status-dot ${device.is_connected ? 'online' : 'offline'}"></span>
+                                <span>${device.is_connected ? '已连接' : '未连接'}</span>
                             </div>
                         </td>
                         <td>${device.addr}</td>
