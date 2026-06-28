@@ -158,11 +158,39 @@ impl MdnsService {
         Ok(())
     }
 
-    /// 通过 UDP socket connect 到公网地址（不发包）的方式，
-    /// 让操作系统选择本机在局域网接口上的 IPv4。
-    /// 该方法不依赖任何第三方 crate。
+    /// 检测本机局域网 IPv4 地址
+    ///
+    /// 策略：
+    /// 1. 优先枚举所有网络接口，取第一个非回环、非代理假 IP（198.18.0.0/15）、
+    ///    且是私有 IPv4 地址（192.168.x.x / 10.x.x.x / 172.16-31.x.x）
+    /// 2. 回退到 UDP connect 8.8.8.8:80 方法（原方案）
     fn detect_local_ipv4() -> Option<String> {
-        // 连接到 8.8.8.8:80 不会真的发包，仅让 OS 选出本机出口 IP
+        // 策略一：枚举网络接口（可跳过代理接口）
+        if let Ok(if_addrs) = get_if_addrs::get_if_addrs() {
+            for iface in &if_addrs {
+                let ip = iface.ip();
+                match ip {
+                    std::net::IpAddr::V4(v4) => {
+                        let octets = v4.octets();
+                        // 跳过回环
+                        if octets[0] == 127 { continue; }
+                        // 跳过 Surge/ClashX 假 IP 段 198.18.0.0/15
+                        if octets[0] == 198 && octets[1] == 18 { continue; }
+                        // 只保留私有地址段
+                        let is_private = octets[0] == 10
+                            || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+                            || (octets[0] == 192 && octets[1] == 168)
+                            || (octets[0] == 100 && (64..=127).contains(&octets[1])); // CGNAT
+                        if is_private {
+                            return Some(v4.to_string());
+                        }
+                    }
+                    std::net::IpAddr::V6(_) => {}
+                }
+            }
+        }
+
+        // 策略二：回退到 UDP connect 方法
         let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
         socket.connect("8.8.8.8:80").ok()?;
         let addr = socket.local_addr().ok()?;
