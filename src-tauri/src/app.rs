@@ -140,6 +140,19 @@ impl App {
         let identity = Arc::new(identity);
         let device_id = identity.device_id().to_string();
 
+        // 同步 config.device_id 为 identity 派生 ID（消除 mDNS 与 WebSocket 的 ID 不一致）
+        let mut config = config;
+        if config.device_id != device_id {
+            info!(
+                "同步设备 ID: config={} → identity={}",
+                config.device_id, device_id
+            );
+            config.device_id = device_id.clone();
+            if let Err(e) = config.save() {
+                warn!("保存同步后的设备 ID 失败: {}", e);
+            }
+        }
+
         // 初始化加密传输层
         let crypto = Arc::new(CryptoTransport::new(Arc::clone(&identity)));
 
