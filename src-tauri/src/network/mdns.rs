@@ -402,8 +402,10 @@ impl MdnsService {
         let send_name = self.device_name.clone();
         let send_port = self.port;
         let send_ip = local_ip.clone();
+        let send_crypto_version = self.crypto_version.clone();
+        let send_public_key = self.public_key_base64.clone();
         std::thread::spawn(move || {
-            Self::udp_broadcast_sender_loop(send_devices, send_id, send_name, send_port, &send_ip);
+            Self::udp_broadcast_sender_loop(send_devices, send_id, send_name, send_port, &send_ip, send_crypto_version, send_public_key);
         });
 
         let recv_devices = Arc::clone(&self.devices);
@@ -422,6 +424,8 @@ impl MdnsService {
         device_name: String,
         port: u16,
         local_ip: &str,
+        crypto_version: String,
+        public_key_base64: Option<String>,
     ) {
         let socket = match std::net::UdpSocket::bind("0.0.0.0:0") {
             Ok(s) => s,
@@ -441,6 +445,8 @@ impl MdnsService {
             "device_name": device_name,
             "addr": local_ip,
             "port": port,
+            "crypto_version": crypto_version,
+            "public_key": public_key_base64,
         });
         let payload = match serde_json::to_string(&msg) {
             Ok(p) => p,
