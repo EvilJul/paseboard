@@ -51,6 +51,8 @@ pub struct WebSocketServer {
     connected_device_ids: Arc<RwLock<HashSet<String>>>,
     /// 加密传输层
     crypto: Arc<CryptoTransport>,
+    /// 预绑定的 TCP 监听器（从 new() 传递到 run()，避免端口释放时间窗口）
+    pre_bound_listener: std::net::TcpListener,
 }
 
 impl WebSocketServer {
@@ -71,7 +73,7 @@ impl WebSocketServer {
         crypto: Arc<CryptoTransport>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<Message>), NetworkError> {
         // 同步预绑定端口，确保 mDNS 注册时端口一定可用
-        std::net::TcpListener::bind(&bind_addr).map_err(|e| {
+        let pre_bound_listener = std::net::TcpListener::bind(&bind_addr).map_err(|e| {
             NetworkError::ConnectionFailed(format!(
                 "WebSocket 预绑定 {} 失败: {}",
                 bind_addr, e
@@ -87,6 +89,7 @@ impl WebSocketServer {
             message_tx,
             connected_device_ids,
             crypto,
+            pre_bound_listener,
         };
 
         Ok((server, message_rx))
@@ -94,10 +97,13 @@ impl WebSocketServer {
 
     /// 启动服务端（阻塞当前任务）
     pub async fn run(&self) -> Result<(), NetworkError> {
-        // 绑定监听地址（端口在 new() 中已预绑定，这里再次绑定成功即可）
-        let listener = TcpListener::bind(&self.bind_addr)
-            .await
-            .map_err(|e| NetworkError::ConnectionFailed(format!("绑定失败: {}", e)))?;
+        // 使用预绑定的 listener，避免端口释放时间窗口
+        let listener = TcpListener::from_std(
+            self.pre_bound_listener.try_clone().map_err(|e| {
+                NetworkError::ConnectionFailed(format!("克隆监听器失败: {}", e))
+            })?,
+        )
+        .map_err(|e| NetworkError::ConnectionFailed(format!("转换异步监听器失败: {}", e)))?;
 
         info!("WebSocket 服务端启动，监听 {}", self.bind_addr);
 
