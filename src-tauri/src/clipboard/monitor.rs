@@ -23,6 +23,8 @@ const POLL_INTERVAL_MS: u64 = 500;
 pub struct ClipboardChange {
     /// 粘贴板内容
     pub content: String,
+    /// 内容类型（"text" 或 "image"）
+    pub content_type: String,
     /// 内容哈希（SHA256）
     pub hash: String,
 }
@@ -74,7 +76,7 @@ impl ClipboardMonitor {
     /// 检查粘贴板内容变化
     async fn check_clipboard(&mut self) -> Result<(), ClipboardError> {
         // 读取粘贴板内容
-        let content = match self.read_clipboard().await {
+        let (content, content_type) = match self.read_clipboard().await {
             Ok(c) => c,
             Err(e) => {
                 // 粘贴板可能被锁定或为空，这是正常情况
@@ -120,6 +122,7 @@ impl ClipboardMonitor {
         // 发送变化事件
         let change = ClipboardChange {
             content,
+            content_type,
             hash,
         };
 
@@ -131,20 +134,51 @@ impl ClipboardMonitor {
     }
 
     /// 读取粘贴板内容
-    async fn read_clipboard(&self) -> Result<String, ClipboardError> {
+    async fn read_clipboard(&self) -> Result<(String, String), ClipboardError> {
         // 使用 arboard 读取剪贴板内容
-        let result = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let mut clipboard = Clipboard::new()
                 .map_err(|e| ClipboardError::ClipboardLocked(format!("创建剪贴板实例失败: {}", e)))?;
 
-            clipboard
-                .get_text()
-                .map_err(|e| ClipboardError::ClipboardLocked(format!("读取失败: {}", e)))
+            // 先尝试读取文本
+            match clipboard.get_text() {
+                Ok(text) if !text.is_empty() => return Ok((text, "text".to_string())),
+                _ => {} // 文本为空或读取失败，继续尝试图片
+            }
+
+            // 尝试读取图片
+            match clipboard.get_image() {
+                Ok(img_data) => {
+                    let png_bytes = Self::rgba_to_png(
+                        &img_data.bytes,
+                        img_data.width,
+                        img_data.height,
+                    )?;
+                    let base64_str = base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &png_bytes,
+                    );
+                    Ok((base64_str, "image".to_string()))
+                }
+                Err(e) => Err(ClipboardError::ClipboardLocked(format!(
+                    "读取粘贴板失败（文本和图片均不可用）: {}",
+                    e
+                ))),
+            }
         })
         .await
-        .map_err(|e| ClipboardError::ClipboardLocked(format!("任务执行失败: {}", e)))??;
+        .map_err(|e| ClipboardError::ClipboardLocked(format!("任务执行失败: {}", e)))?
+    }
 
-        Ok(result)
+    /// RGBA 原始数据编码为 PNG 格式的 bytes
+    fn rgba_to_png(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u8>, ClipboardError> {
+        use image::{ImageBuffer, RgbaImage};
+        let img: RgbaImage = ImageBuffer::from_raw(width as u32, height as u32, rgba.to_vec())
+            .ok_or_else(|| ClipboardError::ClipboardLocked("创建图片缓冲区失败".to_string()))?;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png)
+            .map_err(|e| ClipboardError::ClipboardLocked(format!("PNG 编码失败: {}", e)))?;
+        Ok(buf.into_inner())
     }
 
     /// 检查内容是否来自网络

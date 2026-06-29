@@ -19,6 +19,9 @@ pub enum MessageType {
         uuid: String,
         /// 粘贴板内容
         content: String,
+        /// 内容类型（"text" 或 "image"）
+        #[serde(default = "default_content_type")]
+        content_type: String,
         /// 来源设备 ID
         device_id: String,
         /// Unix 时间戳（秒）
@@ -90,7 +93,7 @@ pub struct Message {
 
 impl Message {
     /// 创建粘贴板同步消息
-    pub fn new_clipboard(content: String, device_id: String) -> Self {
+    pub fn new_clipboard(content: String, content_type: String, device_id: String) -> Self {
         let uuid = Uuid::new_v4().to_string();
         let timestamp = chrono::Utc::now().timestamp();
 
@@ -98,6 +101,7 @@ impl Message {
             msg_type: MessageType::Clipboard {
                 uuid,
                 content,
+                content_type,
                 device_id,
                 timestamp,
             },
@@ -228,6 +232,14 @@ impl Message {
         }
     }
 
+    /// 获取内容类型（仅 Clipboard 类型有效，默认 "text"）
+    pub fn content_type(&self) -> &str {
+        match &self.msg_type {
+            MessageType::Clipboard { content_type, .. } => content_type,
+            _ => "text",
+        }
+    }
+
     /// 判断是否为心跳消息
     pub fn is_heartbeat(&self) -> bool {
         matches!(self.msg_type, MessageType::Heartbeat { .. })
@@ -304,9 +316,9 @@ impl Message {
     pub fn size(&self) -> usize {
         // 估算消息大小（JSON 序列化后的大小）
         match &self.msg_type {
-            MessageType::Clipboard { uuid, content, device_id, .. } => {
+            MessageType::Clipboard { uuid, content, content_type, device_id, .. } => {
                 // 估算 JSON 结构开销 + 实际内容
-                uuid.len() + content.len() + device_id.len() + 100
+                uuid.len() + content.len() + content_type.len() + device_id.len() + 100
             }
             MessageType::Heartbeat { device_id, .. }
             | MessageType::HeartbeatAck { device_id, .. } => {
@@ -328,6 +340,11 @@ impl Message {
     }
 }
 
+/// 默认内容类型（兼容旧版本消息）
+fn default_content_type() -> String {
+    "text".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +353,7 @@ mod tests {
     fn test_clipboard_message_creation() {
         let msg = Message::new_clipboard(
             "Hello, World!".to_string(),
+            "text".to_string(),
             "device-123".to_string(),
         );
 
@@ -343,6 +361,7 @@ mod tests {
         assert!(!msg.is_heartbeat());
         assert_eq!(msg.device_id(), "device-123");
         assert_eq!(msg.content(), Some("Hello, World!"));
+        assert_eq!(msg.content_type(), "text");
         assert!(msg.uuid().is_some());
     }
 
@@ -369,6 +388,7 @@ mod tests {
     fn test_message_serialization() {
         let msg = Message::new_clipboard(
             "Test content".to_string(),
+            "text".to_string(),
             "device-abc".to_string(),
         );
 
@@ -376,6 +396,7 @@ mod tests {
         assert!(json.contains("\"type\":\"clipboard\""));
         assert!(json.contains("\"content\":\"Test content\""));
         assert!(json.contains("\"device_id\":\"device-abc\""));
+        assert!(json.contains("\"content_type\":\"text\""));
     }
 
     #[test]
@@ -392,6 +413,8 @@ mod tests {
         assert!(msg.is_clipboard());
         assert_eq!(msg.content(), Some("Test"));
         assert_eq!(msg.device_id(), "device-1");
+        // 旧版本消息没有 content_type 字段，默认为 "text"
+        assert_eq!(msg.content_type(), "text");
     }
 
     #[test]
@@ -452,6 +475,7 @@ mod tests {
     fn test_message_size() {
         let msg = Message::new_clipboard(
             "A".repeat(1000),
+            "text".to_string(),
             "device-1".to_string(),
         );
 

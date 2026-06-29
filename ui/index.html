@@ -265,32 +265,6 @@
             color: #c4612f;
         }
 
-        .badge.paired {
-            background: #d1fae5;
-            color: #166534;
-        }
-
-        .badge.unpaired {
-            background: #f1f5f9;
-            color: #64748b;
-        }
-
-        .unpair-btn {
-            border: none;
-            background: transparent;
-            cursor: pointer;
-            font-size: 12px;
-            color: #94a3b8;
-            padding: 2px 6px;
-            border-radius: 4px;
-            transition: all 0.15s;
-        }
-
-        .unpair-btn:hover {
-            background: #fef2f2;
-            color: #ef4444;
-        }
-
         /* 加载状态 */
         .loading {
             text-align: center;
@@ -544,11 +518,62 @@
             cursor: pointer;
         }
 
+        /* 图片预览 */
+        .image-preview {
+            max-width: 200px;
+            max-height: 80px;
+            overflow: hidden;
+            border-radius: 4px;
+        }
+
+        .image-preview img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .image-preview img:hover {
+            transform: scale(1.05);
+        }
+
         .settings-version {
             color: #999;
             font-size: 11px;
             text-align: center;
         }
+
+        /* 配对审批弹窗 */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex; align-items: center; justify-content: center;
+            z-index: 10000;
+            -webkit-app-region: no-drag;
+        }
+        .modal-content {
+            background: #1e1e2e; border-radius: 12px; padding: 24px;
+            max-width: 360px; width: 90%; text-align: center;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            border: 1px solid #313244;
+        }
+        .modal-icon { font-size: 36px; margin-bottom: 8px; }
+        .modal-content h3 { margin: 0 0 8px; color: #cdd6f4; font-size: 16px; }
+        .modal-content p { color: #a6adc8; font-size: 13px; margin: 4px 0; }
+        .modal-device-id { font-family: monospace; font-size: 11px; color: #6c7086; word-break: break-all; }
+        .modal-actions { display: flex; gap: 12px; margin-top: 16px; justify-content: center; }
+        .modal-btn {
+            padding: 8px 24px; border-radius: 8px; border: none;
+            cursor: pointer; font-size: 13px; font-weight: 500;
+            transition: background 0.2s;
+        }
+        .modal-btn.reject { background: #313244; color: #cdd6f4; }
+        .modal-btn.reject:hover { background: #45475a; }
+        .modal-btn.approve { background: #a6e3a1; color: #1e1e2e; }
+        .modal-btn.approve:hover { background: #94e2d5; }
     </style>
 </head>
 <body>
@@ -569,14 +594,12 @@
                             <tr>
                                 <th>设备名称</th>
                                 <th>状态</th>
-                                <th>配对</th>
-                                <th>IP 地址</th>
-                                <th>端口</th>
+                                <th>IP + 端口</th>
                             </tr>
                         </thead>
                         <tbody id="devices-tbody">
                             <tr>
-                                <td colspan="4">
+                                <td colspan="3">
                                     <div class="loading">
                                         <div class="spinner"></div>
                                         <div>加载设备列表中...</div>
@@ -741,23 +764,25 @@
             return content.substring(0, maxLength) + '...';
         }
 
-        // 加载设备列表
+        // 加载设备列表（带去重）
+        let _lastDevicesHash = '';
         async function loadDevices() {
             const tbody = document.getElementById('devices-tbody');
             const status = document.getElementById('status-text');
 
             try {
-                const [devices, pairedDevices] = await Promise.all([
-                    invoke('get_devices'),
-                    invoke('get_paired_devices'),
-                ]);
-                const pairedSet = new Set(pairedDevices.map(d => d.device_id));
+                const devices = await invoke('get_devices');
+
+                // 用设备 id + 连接状态生成指纹
+                const hash = devices.map(d => `${d.id}:${d.is_connected}`).join(',');
+                if (hash === _lastDevicesHash) return;
+                _lastDevicesHash = hash;
                 status.textContent = `已发现 ${devices.length} 台设备`;
 
                 if (devices.length === 0) {
                     tbody.innerHTML = `
                         <tr>
-                            <td colspan="5">
+                            <td colspan="3">
                                 <div class="empty-state">
                                     <div class="empty-state-icon">📡</div>
                                     <div class="empty-state-title">未发现设备</div>
@@ -770,27 +795,20 @@
                 }
 
                 tbody.innerHTML = devices.map(device => {
-                    const isPaired = pairedSet.has(device.id);
                     return `
                     <tr>
                         <td>${device.name}</td>
                         <td>
                             <span class="status-dot ${device.is_connected ? 'online' : 'offline'}"></span>
                         </td>
-                        <td>
-                            ${isPaired
-                                ? '<span class="badge paired">已配对</span>'
-                                : '<span class="badge unpaired">未配对</span>'}
-                        </td>
-                        <td>${device.addr}</td>
-                        <td>${device.port}${isPaired ? ` <button class="unpair-btn" onclick="unpairDevice('${escapeAttr(device.id)}','${escapeAttr(device.name)}')" title="解除配对">解除</button>` : ''}</td>
+                        <td>${device.addr}:${device.port}</td>
                     </tr>
                 `}).join('');
             } catch (error) {
                 console.error('加载设备列表失败:', error);
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="5">
+                        <td colspan="3">
                             <div class="empty-state">
                                 <div class="empty-state-icon">❌</div>
                                 <div class="empty-state-title">加载失败</div>
@@ -802,12 +820,18 @@
             }
         }
 
-        // 加载历史记录
+        // 加载历史记录（带去重：仅数据变化时重渲染，避免闪烁）
+        let _lastHistoryHash = '';
         async function loadHistory() {
             const tbody = document.getElementById('history-tbody');
 
             try {
                 const history = await invoke('get_history');
+
+                // 用 id 列表 + 总数生成简易指纹，避免每 5 秒重渲染
+                const hash = history.map(h => h.id).join(',');
+                if (hash === _lastHistoryHash) return;
+                _lastHistoryHash = hash;
 
                 if (history.length === 0) {
                     tbody.innerHTML = `
@@ -825,25 +849,46 @@
                 }
 
                 tbody.innerHTML = history.map(item => {
-                    const preview = truncateContent(item.content);
                     const relativeTime = formatRelativeTime(item.timestamp);
                     const size = formatSize(item.size);
-                    const isLarge = item.size > 10 * 1024 * 1024;
 
-                    return `
-                        <tr data-content="${escapeAttr(item.content)}" onclick="copyToClipboard(this)">
-                            <td>
-                                <div class="content-preview" data-full="${escapeAttr(item.content)}">${escapeHtml(preview)}</div>
-                            </td>
-                            <td>${escapeHtml(item.device_name)}</td>
-                            <td class="meta-col">
-                                ${isLarge ? '<span class="badge">超大</span> ' : ''}
-                                <span class="relative-time">${relativeTime}</span>
-                                <span class="meta-sep">·</span>
-                                <span>${size}</span>
-                            </td>
-                        </tr>
-                    `;
+                    if (item.content_type === 'image') {
+                        // 图片：显示缩略图预览
+                        return `
+                            <tr data-content="${escapeAttr(item.content)}" data-type="image" onclick="copyToClipboard(this)">
+                                <td>
+                                    <div class="image-preview">
+                                        <img src="data:image/png;base64,${item.content}" alt="剪贴板图片" loading="lazy" />
+                                    </div>
+                                </td>
+                                <td>${escapeHtml(item.device_name)}</td>
+                                <td class="meta-col">
+                                    <span class="badge">图片</span>
+                                    <span class="relative-time">${relativeTime}</span>
+                                    <span class="meta-sep">·</span>
+                                    <span>${size}</span>
+                                </td>
+                            </tr>
+                        `;
+                    } else {
+                        // 文本：保持现有逻辑
+                        const preview = truncateContent(item.content);
+                        const isLarge = item.size > 10 * 1024 * 1024;
+                        return `
+                            <tr data-content="${escapeAttr(item.content)}" data-type="text" onclick="copyToClipboard(this)">
+                                <td>
+                                    <div class="content-preview" data-full="${escapeAttr(item.content)}">${escapeHtml(preview)}</div>
+                                </td>
+                                <td>${escapeHtml(item.device_name)}</td>
+                                <td class="meta-col">
+                                    ${isLarge ? '<span class="badge">超大</span> ' : ''}
+                                    <span class="relative-time">${relativeTime}</span>
+                                    <span class="meta-sep">·</span>
+                                    <span>${size}</span>
+                                </td>
+                            </tr>
+                        `;
+                    }
                 }).join('');
             } catch (error) {
                 console.error('加载历史记录失败:', error);
@@ -863,44 +908,29 @@
 
         // 点击历史记录复制到粘贴板
         async function copyToClipboard(row) {
-            const content = row.getAttribute('data-content');
+            const contentType = row.dataset.type;
+            const content = row.dataset.content;
             if (!content) return;
 
             try {
-                // 由后端 Rust 命令绕过 ACL 权限检查
-                await invoke('copy_to_clipboard', { content });
-
-                showToast('已复制到粘贴板');
+                if (contentType === 'image') {
+                    // 图片：调用后端写入系统剪贴板
+                    await invoke('copy_image_to_clipboard', { base64Data: content });
+                    showToast('图片已复制到剪贴板');
+                } else {
+                    // 文本：保持现有逻辑
+                    await invoke('copy_to_clipboard', { content });
+                    showToast('已复制到粘贴板');
+                }
 
                 // 行背景闪烁视觉反馈
                 row.style.background = '#f2e3d6';
                 setTimeout(() => {
                     row.style.background = '';
                 }, 300);
-
-                // 检查内容大小，超过 10MB 显示额外警告
-                const size = new Blob([content]).size;
-                if (size > 10 * 1024 * 1024) {
-                    showToast('内容超过 10MB，不同步');
-                }
             } catch (error) {
                 console.error('复制失败:', error);
                 showToast('复制失败: ' + error);
-            }
-        }
-
-        // 解除设备配对
-        async function unpairDevice(deviceId, deviceName) {
-            if (!confirm(`确定解除与设备 "${deviceName}" 的配对？解除后该设备将无法同步粘贴板。`)) {
-                return;
-            }
-            try {
-                await invoke('remove_pairing', { deviceId });
-                showToast(`已解除与 "${deviceName}" 的配对`);
-                loadDevices();
-            } catch (error) {
-                console.error('解除配对失败:', error);
-                showToast('解除配对失败: ' + error);
             }
         }
 
@@ -930,13 +960,10 @@
 
         // 清空历史记录
         document.getElementById('clear-history-btn').addEventListener('click', async () => {
-            if (!confirm('确定要清空所有历史记录？此操作不可撤销。')) {
-                return;
-            }
-
             try {
                 await invoke('clear_history');
                 showToast('历史记录已清空');
+                _lastHistoryHash = ''; // 重置缓存，强制刷新
                 loadHistory();
             } catch (error) {
                 console.error('清空历史记录失败:', error);
@@ -1164,6 +1191,66 @@
 
         // 初始加载
         loadDevices();
+    </script>
+
+    <!-- 配对审批弹窗 -->
+    <div id="pairing-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-icon">🔗</div>
+            <h3>配对请求</h3>
+            <p>设备 <strong id="pairing-device-name"></strong> 请求与本机配对</p>
+            <p class="modal-device-id" id="pairing-device-id"></p>
+            <div class="modal-actions">
+                <button id="pairing-reject-btn" class="modal-btn reject">拒绝</button>
+                <button id="pairing-approve-btn" class="modal-btn approve">同意</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ── 配对审批弹窗逻辑 ──
+        (function() {
+            const invoke = window.__TAURI_INTERNALS__.invoke;
+            let currentPairingDeviceId = null;
+
+            function showPairingModal(deviceId, deviceName) {
+                currentPairingDeviceId = deviceId;
+                document.getElementById('pairing-device-name').textContent = deviceName || deviceId;
+                document.getElementById('pairing-device-id').textContent = 'ID: ' + deviceId;
+                document.getElementById('pairing-modal').style.display = 'flex';
+            }
+
+            function hidePairingModal() {
+                document.getElementById('pairing-modal').style.display = 'none';
+                currentPairingDeviceId = null;
+            }
+
+            document.getElementById('pairing-approve-btn').addEventListener('click', async () => {
+                if (currentPairingDeviceId) {
+                    try {
+                        await invoke('approve_pairing', { deviceId: currentPairingDeviceId });
+                        showToast('已同意配对');
+                    } catch (e) { showToast('配对操作失败: ' + e); }
+                }
+                hidePairingModal();
+            });
+
+            document.getElementById('pairing-reject-btn').addEventListener('click', async () => {
+                if (currentPairingDeviceId) {
+                    try {
+                        await invoke('reject_pairing', { deviceId: currentPairingDeviceId });
+                        showToast('已拒绝配对');
+                    } catch (e) { showToast('配对操作失败: ' + e); }
+                }
+                hidePairingModal();
+            });
+
+            // 监听后端配对请求事件
+            window.__TAURI_INTERNALS__.addEventHandler('pairing-request', (event) => {
+                const { device_id, device_name } = event;
+                showPairingModal(device_id, device_name);
+            });
+        })();
     </script>
 </body>
 </html>

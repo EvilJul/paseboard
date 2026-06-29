@@ -239,6 +239,7 @@ mod tests {
     fn test_check_message_size_within_limit() {
         let msg = Message::new_clipboard(
             "Small content".to_string(),
+            "text".to_string(),
             "device-1".to_string(),
         );
 
@@ -249,7 +250,7 @@ mod tests {
     fn test_check_message_size_exceeds_limit() {
         // 创建超过 10MB 的内容
         let large_content = "A".repeat(11 * 1024 * 1024);
-        let msg = Message::new_clipboard(large_content, "device-1".to_string());
+        let msg = Message::new_clipboard(large_content, "text".to_string(), "device-1".to_string());
 
         let result = check_message_size(&msg);
         assert!(result.is_err());
@@ -260,6 +261,7 @@ mod tests {
     fn test_encode_decode_message() {
         let original = Message::new_clipboard(
             "Test content".to_string(),
+            "text".to_string(),
             "device-123".to_string(),
         );
 

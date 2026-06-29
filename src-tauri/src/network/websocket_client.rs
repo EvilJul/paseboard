@@ -467,7 +467,7 @@ mod tests {
             crypto,
         );
 
-        let msg = Message::new_clipboard("Test".to_string(), "device-1".to_string());
+        let msg = Message::new_clipboard("Test".to_string(), "text".to_string(), "device-1".to_string());
         let result = client.send(msg).await;
 
         assert!(result.is_err());

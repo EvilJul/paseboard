@@ -10,6 +10,7 @@ use crate::utils::error::ClipboardError;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use arboard::Clipboard;
+use base64::Engine;
 use tokio::sync::Mutex;
 use tokio::time::{Duration, sleep};
 
@@ -42,14 +43,15 @@ impl ClipboardWriter {
     /// 写入粘贴板内容
     ///
     /// # 参数
-    /// - `content`: 要写入的内容
+    /// - `content`: 要写入的内容（文本或 Base64 编码的 PNG 图片）
+    /// - `content_type`: 内容类型（"text" 或 "image"）
     /// - `uuid`: 消息 UUID（用于去重）
     ///
     /// # 返回
     /// - `Ok(true)`: 成功写入
     /// - `Ok(false)`: UUID 已存在，跳过写入
     /// - `Err`: 写入失败（重试后仍失败）
-    pub async fn write(&self, content: String, uuid: String) -> Result<bool, ClipboardError> {
+    pub async fn write(&self, content: String, content_type: String, uuid: String) -> Result<bool, ClipboardError> {
         // 检查 UUID 是否已处理
         if self.is_uuid_processed(&uuid).await {
             log::debug!("UUID {} 已处理过，跳过写入", uuid);
@@ -57,23 +59,23 @@ impl ClipboardWriter {
         }
 
         // 尝试写入粘贴板（带重试）
-        self.write_with_retry(&content).await?;
+        self.write_with_retry(&content, &content_type).await?;
 
         // 记录 UUID
         self.add_uuid_to_cache(uuid).await;
 
-        log::info!("成功写入粘贴板，内容长度: {} 字节", content.len());
+        log::info!("成功写入粘贴板，内容类型: {}，内容长度: {} 字节", content_type, content.len());
         Ok(true)
     }
 
     /// 带重试的写入操作
-    async fn write_with_retry(&self, content: &str) -> Result<(), ClipboardError> {
+    async fn write_with_retry(&self, content: &str, content_type: &str) -> Result<(), ClipboardError> {
         let mut attempts = 0;
 
         loop {
             attempts += 1;
 
-            match self.write_clipboard(content).await {
+            match self.write_clipboard(content, content_type).await {
                 Ok(_) => return Ok(()),
                 Err(e) => {
                     if attempts >= MAX_RETRY_ATTEMPTS {
@@ -97,19 +99,50 @@ impl ClipboardWriter {
     }
 
     /// 写入粘贴板（底层操作）
-    async fn write_clipboard(&self, content: &str) -> Result<(), ClipboardError> {
+    async fn write_clipboard(&self, content: &str, content_type: &str) -> Result<(), ClipboardError> {
         let content = content.to_string();
+        let content_type = content_type.to_string();
 
         tokio::task::spawn_blocking(move || {
             let mut clipboard = Clipboard::new()
                 .map_err(|e| ClipboardError::ClipboardLocked(format!("创建剪贴板实例失败: {}", e)))?;
 
-            clipboard
-                .set_text(content)
-                .map_err(|e| ClipboardError::ClipboardLocked(format!("写入失败: {}", e)))
+            match content_type.as_str() {
+                "image" => {
+                    // Base64 解码 -> PNG bytes -> RGBA -> set_image
+                    let png_bytes = base64::engine::general_purpose::STANDARD
+                        .decode(&content)
+                        .map_err(|e| ClipboardError::ClipboardLocked(format!("Base64 解码失败: {}", e)))?;
+                    let (rgba, width, height) = Self::png_to_rgba(&png_bytes)?;
+                    let img_data = arboard::ImageData {
+                        width,
+                        height,
+                        bytes: std::borrow::Cow::Owned(rgba),
+                    };
+                    clipboard
+                        .set_image(img_data)
+                        .map_err(|e| ClipboardError::ClipboardLocked(format!("写入图片失败: {}", e)))
+                }
+                _ => {
+                    // 默认：文本写入
+                    clipboard
+                        .set_text(content)
+                        .map_err(|e| ClipboardError::ClipboardLocked(format!("写入失败: {}", e)))
+                }
+            }
         })
         .await
         .map_err(|e| ClipboardError::ClipboardLocked(format!("任务执行失败: {}", e)))?
+    }
+
+    /// PNG 字节解码为 RGBA 格式
+    fn png_to_rgba(png_bytes: &[u8]) -> Result<(Vec<u8>, usize, usize), ClipboardError> {
+        let img = image::load_from_memory(png_bytes)
+            .map_err(|e| ClipboardError::ClipboardLocked(format!("PNG 解码失败: {}", e)))?;
+        let rgba = img.to_rgba8();
+        let width = rgba.width() as usize;
+        let height = rgba.height() as usize;
+        Ok((rgba.into_raw(), width, height))
     }
 
     /// 检查 UUID 是否已处理

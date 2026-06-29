@@ -133,6 +133,7 @@ pub struct HistoryStorage {
 pub struct HistoryItem {
     pub id: i64,
     pub content: String,
+    pub content_type: String,
     pub content_hash: String,
     pub device_id: String,
     pub device_name: String,
@@ -238,6 +239,19 @@ impl HistoryStorage {
             [],
         )?;
 
+        // 迁移：添加 content_type 列（如果不存在）
+        {
+            let has_col: bool = conn.prepare(
+                "SELECT COUNT(*) FROM pragma_table_info('clipboard_history') WHERE name='content_type'"
+            )?.query_row([], |row| row.get::<_, i64>(0))? > 0;
+            if !has_col {
+                conn.execute(
+                    "ALTER TABLE clipboard_history ADD COLUMN content_type TEXT NOT NULL DEFAULT 'text'",
+                    [],
+                )?;
+            }
+        }
+
         // 创建时间戳索引（降序，优化查询最近记录）
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_timestamp
@@ -279,6 +293,7 @@ impl HistoryStorage {
     ///
     /// # Arguments
     /// * `content` - 粘贴板内容
+    /// * `content_type` - 内容类型（"text" 或 "image"）
     /// * `device_id` - 设备 UUID
     /// * `device_name` - 设备名称
     ///
@@ -287,6 +302,7 @@ impl HistoryStorage {
     pub fn insert(
         &mut self,
         content: &str,
+        content_type: &str,
         device_id: &str,
         device_name: &str,
     ) -> Result<i64, StorageError> {
@@ -329,9 +345,9 @@ impl HistoryStorage {
         // 插入记录（唯一索引自动防并发重复）
         self.conn.execute(
             "INSERT OR IGNORE INTO clipboard_history
-             (content, content_hash, device_id, device_name, timestamp, size)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![content, content_hash, device_id, device_name, timestamp, size],
+             (content, content_type, content_hash, device_id, device_name, timestamp, size)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![content, content_type, content_hash, device_id, device_name, timestamp, size],
         )?;
 
         if self.conn.changes() == 0 {
@@ -375,7 +391,7 @@ impl HistoryStorage {
     /// 历史记录列表（最新的在前）
     pub fn query_recent(&self, limit: usize) -> Result<Vec<HistoryItem>, StorageError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, content, content_hash, device_id, device_name, timestamp, size
+            "SELECT id, content, content_type, content_hash, device_id, device_name, timestamp, size
              FROM clipboard_history
              ORDER BY timestamp DESC, id DESC
              LIMIT ?1",
@@ -385,11 +401,12 @@ impl HistoryStorage {
             Ok(HistoryItem {
                 id: row.get(0)?,
                 content: row.get(1)?,
-                content_hash: row.get(2)?,
-                device_id: row.get(3)?,
-                device_name: row.get(4)?,
-                timestamp: row.get(5)?,
-                size: row.get(6)?,
+                content_type: row.get(2)?,
+                content_hash: row.get(3)?,
+                device_id: row.get(4)?,
+                device_name: row.get(5)?,
+                timestamp: row.get(6)?,
+                size: row.get(7)?,
             })
         })?;
 
@@ -591,6 +608,7 @@ mod tests {
         // 插入一条记录
         let id = storage.insert(
             "测试内容",
+            "text",
             "device-123",
             "测试设备",
         ).unwrap();
@@ -617,6 +635,7 @@ mod tests {
         for i in 0..1005 {
             storage.insert(
                 &format!("内容 {}", i),
+                "text",
                 "device-test",
                 "测试设备",
             ).unwrap();
@@ -646,6 +665,7 @@ mod tests {
         for i in 0..50 {
             storage.insert(
                 &format!("内容 {}", i),
+                "text",
                 "device-test",
                 "测试设备",
             ).unwrap();
@@ -665,7 +685,7 @@ mod tests {
         let mut storage = create_temp_storage();
 
         // 插入一条记录
-        storage.insert("Hello, World!", "device-1", "设备1").unwrap();
+        storage.insert("Hello, World!", "text", "device-1", "设备1").unwrap();
 
         // 查询记录
         let items = storage.query_recent(1).unwrap();
@@ -688,7 +708,7 @@ mod tests {
         let mut storage = create_temp_storage();
 
         // 插入一条记录
-        storage.insert("测试内容", "device-1", "设备1").unwrap();
+        storage.insert("测试内容", "text", "device-1", "设备1").unwrap();
 
         // 计算哈希
         let hash = HistoryStorage::compute_hash("测试内容");
@@ -706,13 +726,13 @@ mod tests {
         let mut storage = create_temp_storage();
 
         // 插入 3 条记录，中间有延迟确保时间戳不同
-        storage.insert("第一条", "device-1", "设备1").unwrap();
+        storage.insert("第一条", "text", "device-1", "设备1").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
 
-        storage.insert("第二条", "device-1", "设备1").unwrap();
+        storage.insert("第二条", "text", "device-1", "设备1").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
 
-        storage.insert("第三条", "device-1", "设备1").unwrap();
+        storage.insert("第三条", "text", "device-1", "设备1").unwrap();
 
         // 查询所有记录
         let items = storage.query_recent(10).unwrap();
@@ -732,18 +752,18 @@ mod tests {
         let mut storage = create_temp_storage();
 
         // 插入一条记录
-        let id1 = storage.insert("相同内容", "device-1", "设备1").unwrap();
+        let id1 = storage.insert("相同内容", "text", "device-1", "设备1").unwrap();
         assert!(id1 > 0);
 
         // 再次插入相同内容 - UNIQUE 索引应阻止
-        let id2 = storage.insert("相同内容", "device-1", "设备1").unwrap();
+        let id2 = storage.insert("相同内容", "text", "device-1", "设备1").unwrap();
         assert_eq!(id2, -1);
 
         // 验证 DB 中只有 1 条
         assert_eq!(storage.count().unwrap(), 1);
 
         // 插入不同内容应正常
-        let id3 = storage.insert("不同内容", "device-1", "设备1").unwrap();
+        let id3 = storage.insert("不同内容", "text", "device-1", "设备1").unwrap();
         assert!(id3 > 0);
         assert_eq!(storage.count().unwrap(), 2);
     }
@@ -753,8 +773,8 @@ mod tests {
         let mut storage = create_temp_storage();
 
         // 同一内容来自不同设备——同样应被 UNIQUE 索引阻止
-        storage.insert("相同", "device-1", "设备1").unwrap();
-        let id = storage.insert("相同", "device-2", "设备2").unwrap();
+        storage.insert("相同", "text", "device-1", "设备1").unwrap();
+        let id = storage.insert("相同", "text", "device-2", "设备2").unwrap();
         assert_eq!(id, -1);
         assert_eq!(storage.count().unwrap(), 1);
     }
@@ -764,12 +784,12 @@ mod tests {
         let mut storage = create_temp_storage();
 
         // 空白内容应被跳过（不进入 DB）
-        let id = storage.insert("   ", "device-1", "设备1").unwrap();
+        let id = storage.insert("   ", "text", "device-1", "设备1").unwrap();
         assert_eq!(id, -1);
         assert_eq!(storage.count().unwrap(), 0);
 
         // 空字符串也应被跳过
-        let id = storage.insert("", "device-1", "设备1").unwrap();
+        let id = storage.insert("", "text", "device-1", "设备1").unwrap();
         assert_eq!(id, -1);
         assert_eq!(storage.count().unwrap(), 0);
     }
@@ -779,10 +799,10 @@ mod tests {
         let mut storage = create_temp_storage();
 
         // 插入 A → B → B → C，期望查询返回 A → B → C
-        storage.insert("A", "device-1", "设备1").unwrap();
-        storage.insert("B", "device-1", "设备1").unwrap();
-        storage.insert("B", "device-1", "设备1").unwrap();
-        storage.insert("C", "device-1", "设备1").unwrap();
+        storage.insert("A", "text", "device-1", "设备1").unwrap();
+        storage.insert("B", "text", "device-1", "设备1").unwrap();
+        storage.insert("B", "text", "device-1", "设备1").unwrap();
+        storage.insert("C", "text", "device-1", "设备1").unwrap();
 
         let items = storage.query_recent(10).unwrap();
         assert_eq!(items.len(), 3);
@@ -796,9 +816,9 @@ mod tests {
         let mut storage = create_temp_storage();
 
         // 插入不同大小的内容
-        storage.insert("a", "device-1", "设备1").unwrap();
-        storage.insert("Hello", "device-1", "设备1").unwrap();
-        storage.insert("你好世界", "device-1", "设备1").unwrap();
+        storage.insert("a", "text", "device-1", "设备1").unwrap();
+        storage.insert("Hello", "text", "device-1", "设备1").unwrap();
+        storage.insert("你好世界", "text", "device-1", "设备1").unwrap();
 
         // 查询记录
         let items = storage.query_recent(10).unwrap();
@@ -833,7 +853,7 @@ mod tests {
     fn test_encrypted_db_insert_and_query() {
         let mut storage = create_temp_storage();
 
-        let id = storage.insert("加密存储测试", "device-enc", "加密测试").unwrap();
+        let id = storage.insert("加密存储测试", "text", "device-enc", "加密测试").unwrap();
         assert!(id > 0);
 
         let items = storage.query_recent(10).unwrap();
@@ -853,7 +873,7 @@ mod tests {
         // 第一次打开，插入数据
         {
             let mut storage = HistoryStorage::open_with_key(&db_path, &key, "file").unwrap();
-            storage.insert("跨会话数据", "device-1", "设备1").unwrap();
+            storage.insert("跨会话数据", "text", "device-1", "设备1").unwrap();
         }
 
         // 第二次打开，验证数据仍然存在（使用相同密钥）

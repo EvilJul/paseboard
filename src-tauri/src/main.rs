@@ -54,6 +54,7 @@ impl From<DeviceSnapshot> for DeviceInfo {
 struct HistoryItem {
     id: i64,
     content: String,
+    content_type: String,
     device_id: String,
     device_name: String,
     timestamp: i64,
@@ -65,6 +66,7 @@ impl From<crate::clipboard::storage::HistoryItem> for HistoryItem {
         Self {
             id: item.id,
             content: item.content,
+            content_type: item.content_type,
             device_id: item.device_id,
             device_name: item.device_name,
             timestamp: item.timestamp,
@@ -84,6 +86,39 @@ async fn copy_to_clipboard(content: String) -> Result<(), String> {
             .map_err(|e| format!("打开粘贴板失败: {}", e))?;
         clipboard.set_text(content)
             .map_err(|e| format!("复制失败: {}", e))
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
+}
+
+/// 复制图片到剪贴板 IPC 命令（接收 Base64 编码的 PNG 数据）
+#[tauri::command]
+async fn copy_image_to_clipboard(base64_data: String) -> Result<(), String> {
+    use base64::Engine;
+    use image::GenericImageView;
+
+    // Base64 解码
+    let png_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&base64_data)
+        .map_err(|e| format!("Base64 解码失败: {}", e))?;
+
+    // PNG 解码为 RGBA
+    let img = image::load_from_memory(&png_bytes)
+        .map_err(|e| format!("PNG 解码失败: {}", e))?;
+    let rgba = img.to_rgba8();
+    let (width, height) = img.dimensions();
+
+    // 写入剪贴板
+    tokio::task::spawn_blocking(move || {
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|e| format!("创建剪贴板实例失败: {}", e))?;
+        clipboard
+            .set_image(arboard::ImageData {
+                width: width as usize,
+                height: height as usize,
+                bytes: std::borrow::Cow::Owned(rgba.into_raw()),
+            })
+            .map_err(|e| format!("写入图片到剪贴板失败: {}", e))
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
@@ -203,6 +238,32 @@ async fn remove_pairing(state: tauri::State<'_, AppState>, device_id: String) ->
         .map_err(|e| e.to_string())
 }
 
+/// 审批配对请求 IPC 命令
+#[tauri::command]
+async fn approve_pairing(
+    device_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .pairing_tx
+        .send(app::PairingOp::ApproveRequest { device_id })
+        .map_err(|_| "配对通道已关闭".to_string())?;
+    Ok(())
+}
+
+/// 拒绝配对请求 IPC 命令
+#[tauri::command]
+async fn reject_pairing(
+    device_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .pairing_tx
+        .send(app::PairingOp::RejectRequest { device_id })
+        .map_err(|_| "配对通道已关闭".to_string())?;
+    Ok(())
+}
+
 /// 获取控制台日志
 #[tauri::command]
 fn get_console_logs(state: tauri::State<'_, LogBuffer>) -> Result<Vec<LogEntry>, String> {
@@ -257,8 +318,11 @@ fn main() {
             open_devtools,
             get_console_logs,
             copy_to_clipboard,
+            copy_image_to_clipboard,
             get_paired_devices,
             remove_pairing,
+            approve_pairing,
+            reject_pairing,
         ])
         .setup(move |app| {
             // 创建系统托盘
