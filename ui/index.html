@@ -1250,6 +1250,27 @@
                 const { device_id, device_name } = event;
                 showPairingModal(device_id, device_name);
             });
+
+            // 初始化时检查是否有待处理的配对请求
+            async function checkPendingPairingRequests() {
+                try {
+                    const pendingRequests = await invoke('get_pending_pairing_requests');
+                    if (pendingRequests && pendingRequests.length > 0) {
+                        // 显示第一个待处理的配对请求
+                        const [deviceId, deviceName] = pendingRequests[0];
+                        showPairingModal(deviceId, deviceName);
+                    }
+                } catch (e) {
+                    console.error('检查待处理配对请求失败:', e);
+                }
+            }
+
+            // 页面加载完成后检查待处理的配对请求
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', checkPendingPairingRequests);
+            } else {
+                checkPendingPairingRequests();
+            }
         })();
     </script>
 </body>

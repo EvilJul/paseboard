@@ -264,6 +264,20 @@ async fn reject_pairing(
     Ok(())
 }
 
+/// 获取待处理的配对请求列表 IPC 命令
+#[tauri::command]
+async fn get_pending_pairing_requests(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<(String, String)>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state
+        .pairing_tx
+        .send(app::PairingOp::ListPending { reply: tx })
+        .map_err(|_| "配对通道已关闭".to_string())?;
+    rx.await
+        .map_err(|_| "获取待处理配对请求失败".to_string())
+}
+
 /// 获取控制台日志
 #[tauri::command]
 fn get_console_logs(state: tauri::State<'_, LogBuffer>) -> Result<Vec<LogEntry>, String> {
@@ -323,6 +337,7 @@ fn main() {
             remove_pairing,
             approve_pairing,
             reject_pairing,
+            get_pending_pairing_requests,
         ])
         .setup(move |app| {
             // 创建系统托盘

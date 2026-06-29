@@ -118,6 +118,10 @@ pub enum PairingOp {
     ApproveRequest { device_id: String },
     /// 用户拒绝配对请求
     RejectRequest { device_id: String },
+    /// 查询待处理的配对请求列表
+    ListPending {
+        reply: tokio::sync::oneshot::Sender<Vec<(String, String)>>,
+    },
 }
 
 /// 应用主协调器
@@ -388,6 +392,16 @@ impl App {
                                 warn!("未找到待审批的配对请求: {}", device_id);
                             }
                         }
+                        PairingOp::ListPending { reply } => {
+                            // 返回待处理的配对请求列表（device_id, device_name）
+                            // 注意：我们只有 device_id，device_name 需要从其他地方获取
+                            // 这里先返回 device_id，device_name 用 device_id 代替
+                            let pending: Vec<(String, String)> = pending_requests
+                                .keys()
+                                .map(|id| (id.clone(), id.clone()))
+                                .collect();
+                            let _ = reply.send(pending);
+                        }
                     }
                 }
                 else => break,
@@ -573,6 +587,7 @@ impl App {
                     config.clone(),
                     Arc::clone(&crypto),
                     Arc::clone(&clients),
+                    Arc::clone(&server_connected_ids),
                     Arc::clone(&dedup_service),
                     Arc::clone(&clipboard_writer),
                     storage_tx.clone(),
@@ -585,27 +600,36 @@ impl App {
 
     /// 连接到指定设备（静态方法）
     ///
-    /// 使用 device_id 比较避免双向连接冲突：
-    /// - 只有 own_device_id < remote_device_id 时才主动连接
-    /// - 否则等待对方连接（通过 WebSocket 服务端接受）
+    /// 检查是否已通过服务器连接（入站连接），避免重复连接。
+    /// 如果设备已通过服务器连接，则跳过客户端连接。
     async fn connect_to_device(
         device: DeviceInfo,
         config: AppConfig,
         crypto: Arc<CryptoTransport>,
         clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
+        server_connected_ids: Arc<RwLock<HashSet<String>>>,
         dedup_service: Arc<DeduplicationService>,
         clipboard_writer: Arc<ClipboardWriter>,
         storage_tx: mpsc::UnboundedSender<StorageRequest>,
         pairing_tx: mpsc::UnboundedSender<PairingOp>,
         app_handle: tauri::AppHandle,
     ) {
-        // 避免双向连接冲突：只有本设备 ID 较小时才主动连接
-        info!("设备 ID 比较: 本设备={}, 远程设备={}, 本设备<远程={}", 
-              config.device_id, device.id, config.device_id < device.id);
-        
-        if config.device_id >= device.id {
-            info!("跳过连接 {}：等待对方连接（本设备 ID 较大）", device.name);
-            return;
+        // 检查是否已通过客户端连接
+        {
+            let clients_read = clients.read().await;
+            if clients_read.contains_key(&device.id) {
+                info!("设备 {} 已通过客户端连接，跳过", device.name);
+                return;
+            }
+        }
+
+        // 检查是否已通过服务器连接（入站连接）
+        {
+            let server_ids = server_connected_ids.read().await;
+            if server_ids.contains(&device.id) {
+                info!("设备 {} 已通过服务器连接，跳过客户端连接", device.name);
+                return;
+            }
         }
         
         let server_url = format!("ws://{}:{}", device.addr, device.port);

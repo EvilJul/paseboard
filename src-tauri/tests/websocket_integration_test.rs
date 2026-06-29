@@ -37,7 +37,7 @@ mod integration_tests {
         let crypto_client = Arc::clone(&crypto);
 
         // 启动服务端
-        let (server, _server_rx) = WebSocketServer::new(
+        let (server, _server_rx, _listener) = WebSocketServer::new(
             "127.0.0.1:19527".to_string(),
             "server-device".to_string(),
             make_connected_ids(),
@@ -46,7 +46,7 @@ mod integration_tests {
         .unwrap();
 
         tokio::spawn(async move {
-            let _ = server.run().await;
+            let _ = server.run(_listener).await;
         });
 
         // 等待服务端启动
@@ -76,7 +76,7 @@ mod integration_tests {
         let crypto = create_test_crypto();
 
         // 启动服务端
-        let (server, mut server_rx) = WebSocketServer::new(
+        let (server, mut server_rx, _listener) = WebSocketServer::new(
             "127.0.0.1:19528".to_string(),
             "server-device".to_string(),
             make_connected_ids(),
@@ -85,7 +85,7 @@ mod integration_tests {
         .unwrap();
 
         tokio::spawn(async move {
-            let _ = server.run().await;
+            let _ = server.run(_listener).await;
         });
 
         sleep(Duration::from_millis(100)).await;
@@ -103,6 +103,7 @@ mod integration_tests {
         // 发送消息
         let msg = Message::new_clipboard(
             "Hello from client".to_string(),
+            "text".to_string(),
             "client-device".to_string(),
         );
 
@@ -128,7 +129,7 @@ mod integration_tests {
         let crypto = create_test_crypto();
 
         // 启动服务端
-        let (server, _server_rx) = WebSocketServer::new(
+        let (server, _server_rx, _listener) = WebSocketServer::new(
             "127.0.0.1:19529".to_string(),
             "server-device".to_string(),
             make_connected_ids(),
@@ -140,7 +141,7 @@ mod integration_tests {
         let server_for_run = server_clone.clone();
 
         tokio::spawn(async move {
-            let _ = server_for_run.run().await;
+            let _ = server_for_run.run(_listener).await;
         });
 
         sleep(Duration::from_millis(100)).await;
@@ -158,6 +159,7 @@ mod integration_tests {
         // 服务端广播消息
         let msg = Message::new_clipboard(
             "Broadcast message".to_string(),
+            "text".to_string(),
             "server-device".to_string(),
         );
 
@@ -183,7 +185,7 @@ mod integration_tests {
         let crypto = create_test_crypto();
 
         // 启动服务端
-        let (server, _server_rx) = WebSocketServer::new(
+        let (server, _server_rx, _listener) = WebSocketServer::new(
             "127.0.0.1:19530".to_string(),
             "server-device".to_string(),
             make_connected_ids(),
@@ -192,7 +194,7 @@ mod integration_tests {
         .unwrap();
 
         tokio::spawn(async move {
-            let _ = server.run().await;
+            let _ = server.run(_listener).await;
         });
 
         sleep(Duration::from_millis(100)).await;
@@ -219,7 +221,7 @@ mod integration_tests {
     async fn test_server_tracks_connected_device_ids() {
         let crypto = create_test_crypto();
         let connected_ids = make_connected_ids();
-        let (server, _server_rx) = WebSocketServer::new(
+        let (server, _server_rx, _listener) = WebSocketServer::new(
             "127.0.0.1:19533".to_string(),
             "server-device".to_string(),
             connected_ids.clone(),
@@ -228,7 +230,7 @@ mod integration_tests {
         .unwrap();
 
         tokio::spawn(async move {
-            let _ = server.run().await;
+            let _ = server.run(_listener).await;
         });
 
         sleep(Duration::from_millis(100)).await;
@@ -256,7 +258,7 @@ mod integration_tests {
 
         // 创建超过 10MB 的消息
         let large_content = "A".repeat(11 * 1024 * 1024);
-        let msg = Message::new_clipboard(large_content, "client-device".to_string());
+        let msg = Message::new_clipboard(large_content, "text".to_string(), "client-device".to_string());
 
         // 检查应该失败
         let result = check_message_size(&msg);
@@ -270,7 +272,7 @@ mod integration_tests {
         let crypto = create_test_crypto();
 
         // 启动服务端
-        let (server, _server_rx) = WebSocketServer::new(
+        let (server, _server_rx, _listener) = WebSocketServer::new(
             "127.0.0.1:19532".to_string(),
             "server-device".to_string(),
             make_connected_ids(),
@@ -282,7 +284,7 @@ mod integration_tests {
         let server_for_run = server.clone();
 
         tokio::spawn(async move {
-            let _ = server_for_run.run().await;
+            let _ = server_for_run.run(_listener).await;
         });
 
         sleep(Duration::from_millis(200)).await;
@@ -313,6 +315,7 @@ mod integration_tests {
         // 广播消息
         let msg = Message::new_clipboard(
             "Broadcast to all".to_string(),
+            "text".to_string(),
             "server-device".to_string(),
         );
 
