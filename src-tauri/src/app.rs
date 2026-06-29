@@ -105,6 +105,8 @@ pub struct App {
     clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
     /// 已连接的入站远程设备 ID 集合
     server_connected_device_ids: Arc<RwLock<HashSet<String>>>,
+    /// WebSocket 预绑定 listener（传递给 run() 保持端口持续监听）
+    ws_listener: std::net::TcpListener,
 }
 
 /// 应用对外暴露给 IPC 命令使用的句柄（轻量、Send + Sync）
@@ -174,7 +176,7 @@ impl App {
 
         // 等待并行初始化完成
         let mdns = mdns_handle.await??;
-        let (ws_server, ws_server_rx) = ws_server_handle.await??;
+        let (ws_server, ws_server_rx, ws_listener) = ws_server_handle.await??;
         let history_storage = storage_handle.await??;
 
         info!("mDNS、WebSocket Server、Storage 并行初始化完成");
@@ -220,6 +222,7 @@ impl App {
             dedup_service: Arc::new(dedup_service),
             clients: Arc::new(RwLock::new(HashMap::new())),
             server_connected_device_ids,
+            ws_listener,
         })
     }
 
@@ -269,12 +272,14 @@ impl App {
             dedup_service,
             clients,
             server_connected_device_ids,
+            ws_listener,
         } = self;
 
         // 启动 WebSocket 服务端（独立任务）
         let ws_server_for_run = Arc::clone(&ws_server);
+        let ws_listener = ws_listener;  // 移动到闭包
         tokio::spawn(async move {
-            if let Err(e) = ws_server_for_run.run().await {
+            if let Err(e) = ws_server_for_run.run(ws_listener).await {
                 error!("WebSocket 服务端运行失败: {}", e);
             }
         });

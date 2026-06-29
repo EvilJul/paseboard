@@ -51,8 +51,6 @@ pub struct WebSocketServer {
     connected_device_ids: Arc<RwLock<HashSet<String>>>,
     /// 加密传输层
     crypto: Arc<CryptoTransport>,
-    /// 预绑定的 TCP 监听器（从 new() 传递到 run()，避免端口释放时间窗口）
-    pre_bound_listener: std::net::TcpListener,
 }
 
 impl WebSocketServer {
@@ -64,14 +62,15 @@ impl WebSocketServer {
     /// - `crypto`: 加密传输层
     ///
     /// # 返回
-    /// - `Ok((WebSocketServer, mpsc::UnboundedReceiver<Message>))`: 服务端实例和消息接收通道
+    /// - `Ok((WebSocketServer, mpsc::UnboundedReceiver<Message>, std::net::TcpListener))`:
+    ///   服务端实例、消息接收通道、预绑定的 TCP listener
     /// - `Err(NetworkError)`: 端口绑定失败
     pub fn new(
         bind_addr: String,
         device_id: String,
         connected_device_ids: Arc<RwLock<HashSet<String>>>,
         crypto: Arc<CryptoTransport>,
-    ) -> Result<(Self, mpsc::UnboundedReceiver<Message>), NetworkError> {
+    ) -> Result<(Self, mpsc::UnboundedReceiver<Message>, std::net::TcpListener), NetworkError> {
         // 同步预绑定端口，确保 mDNS 注册时端口一定可用
         let pre_bound_listener = std::net::TcpListener::bind(&bind_addr).map_err(|e| {
             NetworkError::ConnectionFailed(format!(
@@ -89,21 +88,22 @@ impl WebSocketServer {
             message_tx,
             connected_device_ids,
             crypto,
-            pre_bound_listener,
         };
 
-        Ok((server, message_rx))
+        Ok((server, message_rx, pre_bound_listener))
     }
 
     /// 启动服务端（阻塞当前任务）
-    pub async fn run(&self) -> Result<(), NetworkError> {
-        // 使用预绑定的 listener，避免端口释放时间窗口
-        let listener = TcpListener::from_std(
-            self.pre_bound_listener.try_clone().map_err(|e| {
-                NetworkError::ConnectionFailed(format!("克隆监听器失败: {}", e))
-            })?,
-        )
-        .map_err(|e| NetworkError::ConnectionFailed(format!("转换异步监听器失败: {}", e)))?;
+    pub async fn run(&self, listener: std::net::TcpListener) -> Result<(), NetworkError> {
+        // 设置为非阻塞模式（Tokio 要求）
+        listener.set_nonblocking(true).map_err(|e| {
+            NetworkError::ConnectionFailed(format!("设置非阻塞模式失败: {}", e))
+        })?;
+
+        // 转换为 Tokio 异步 listener（listener 所有权转入此方法，保持端口持续监听）
+        let listener = TcpListener::from_std(listener).map_err(|e| {
+            NetworkError::ConnectionFailed(format!("转换异步监听器失败: {}", e))
+        })?;
 
         info!("WebSocket 服务端启动，监听 {}", self.bind_addr);
 
@@ -424,7 +424,7 @@ mod tests {
     #[tokio::test]
     async fn test_server_creation() {
         let crypto = create_test_crypto();
-        let (server, _rx) = WebSocketServer::new(
+        let (server, _rx, _listener) = WebSocketServer::new(
             "127.0.0.1:9527".to_string(),
             "test-device".to_string(),
             make_connected_ids(),
@@ -440,7 +440,7 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_no_clients() {
         let crypto = create_test_crypto();
-        let (server, _rx) = WebSocketServer::new(
+        let (server, _rx, _listener) = WebSocketServer::new(
             "127.0.0.1:9528".to_string(),
             "test-device".to_string(),
             make_connected_ids(),
