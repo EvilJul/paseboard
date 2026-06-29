@@ -96,14 +96,19 @@ async fn get_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo
     let clients = state.clients.read().await;
     let server_ids = state.server_connected_device_ids.read().await;
 
-    let result: Vec<DeviceInfo> = mdns_devices.into_iter().map(|snap| {
-        let in_clients = clients.contains_key(&snap.id);
+    let mut result: Vec<DeviceInfo> = Vec::with_capacity(mdns_devices.len());
+    for snap in mdns_devices {
+        let in_clients = if let Some(client) = clients.get(&snap.id) {
+            client.is_connected().await
+        } else {
+            false
+        };
         let in_server = server_ids.contains(&snap.id);
         let is_connected = in_clients || in_server;
         let mut info = DeviceInfo::from(snap);
         info.is_connected = is_connected;
-        info
-    }).collect();
+        result.push(info);
+    }
 
     for dev in &result {
         info!("get_devices: {} (id={}, addr={}), is_online={}, is_connected={}",
