@@ -140,6 +140,14 @@ pub struct HistoryItem {
     pub size: i64,
 }
 
+/// 已配对设备信息
+#[derive(Debug, Clone)]
+pub struct PairedDevice {
+    pub device_id: String,
+    pub device_name: String,
+    pub paired_at: i64,
+}
+
 impl HistoryStorage {
     /// 创建新的历史存储管理器
     ///
@@ -241,6 +249,26 @@ impl HistoryStorage {
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_content_hash
              ON clipboard_history(content_hash)",
+            [],
+        )?;
+
+        // 创建配对设备表
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS paired_devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL UNIQUE,
+                device_name TEXT NOT NULL,
+                paired_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        // 创建配对冷却表
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS pairing_cooldown (
+                device_id TEXT PRIMARY KEY,
+                cooldown_until INTEGER NOT NULL
+            )",
             [],
         )?;
 
@@ -420,9 +448,100 @@ impl HistoryStorage {
         Ok(count)
     }
 
-    /// 清空所有历史记录（用于测试）
-    #[cfg(test)]
-    pub fn clear(&mut self) -> Result<(), StorageError> {
+    /// 检查设备是否已配对
+    pub fn is_paired(&self, device_id: &str) -> Result<bool, StorageError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM paired_devices WHERE device_id = ?1",
+            [device_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// 获取已配对设备列表
+    pub fn list_paired_devices(&self) -> Result<Vec<PairedDevice>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT device_id, device_name, paired_at
+             FROM paired_devices
+             ORDER BY paired_at DESC",
+        )?;
+
+        let devices = stmt.query_map([], |row| {
+            Ok(PairedDevice {
+                device_id: row.get(0)?,
+                device_name: row.get(1)?,
+                paired_at: row.get(2)?,
+            })
+        })?;
+
+        let mut result = Vec::new();
+        for device in devices {
+            result.push(device?);
+        }
+        Ok(result)
+    }
+
+    /// 添加已配对设备
+    pub fn add_paired_device(&mut self, device_id: &str, device_name: &str) -> Result<(), StorageError> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO paired_devices (device_id, device_name, paired_at)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![device_id, device_name, timestamp],
+        )?;
+        Ok(())
+    }
+
+    /// 移除已配对设备
+    pub fn remove_paired_device(&mut self, device_id: &str) -> Result<(), StorageError> {
+        self.conn.execute(
+            "DELETE FROM paired_devices WHERE device_id = ?1",
+            [device_id],
+        )?;
+        Ok(())
+    }
+
+    /// 检查设备是否在冷却期
+    pub fn is_in_cooldown(&self, device_id: &str) -> Result<bool, StorageError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let cooldown_until: Option<i64> = self.conn.query_row(
+            "SELECT cooldown_until FROM pairing_cooldown WHERE device_id = ?1",
+            [device_id],
+            |row| row.get(0),
+        ).ok();
+
+        match cooldown_until {
+            Some(until) => Ok(now < until),
+            None => Ok(false),
+        }
+    }
+
+    /// 设置冷却时间（30分钟）
+    pub fn set_cooldown(&mut self, device_id: &str) -> Result<(), StorageError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let cooldown_until = now + 1800; // 30 分钟
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO pairing_cooldown (device_id, cooldown_until)
+             VALUES (?1, ?2)",
+            rusqlite::params![device_id, cooldown_until],
+        )?;
+        Ok(())
+    }
+
+    /// 清空所有历史记录
+    pub fn clear_all(&mut self) -> Result<(), StorageError> {
         self.conn.execute("DELETE FROM clipboard_history", [])?;
         Ok(())
     }

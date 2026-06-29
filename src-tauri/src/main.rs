@@ -118,6 +118,19 @@ async fn get_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo
     Ok(result)
 }
 
+/// 清空历史记录 IPC 命令
+#[tauri::command]
+async fn clear_history(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state
+        .storage_clear_tx
+        .send(app::StorageClear { reply: tx })
+        .map_err(|_| "存储清空通道已关闭".to_string())?;
+    rx.await
+        .map_err(|_| "存储清空响应失败".to_string())?
+        .map_err(|e| e.to_string())
+}
+
 /// 查询历史记录 IPC 命令（最近 100 条）
 #[tauri::command]
 async fn get_history(state: tauri::State<'_, AppState>) -> Result<Vec<HistoryItem>, String> {
@@ -148,6 +161,46 @@ fn open_devtools(window: tauri::Window) -> Result<(), String> {
     info!("open_devtools 调用（仅 debug 模式有效）");
     let _ = window;
     Ok(())
+}
+
+/// 已配对设备信息（用于 IPC 返回）
+#[derive(Debug, Clone, serde::Serialize)]
+struct PairedDeviceInfo {
+    device_id: String,
+    device_name: String,
+    paired_at: i64,
+}
+
+/// 获取已配对设备列表 IPC 命令
+#[tauri::command]
+async fn get_paired_devices(state: tauri::State<'_, AppState>) -> Result<Vec<PairedDeviceInfo>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state
+        .pairing_tx
+        .send(app::PairingOp::List { reply: tx })
+        .map_err(|_| "配对通道已关闭".to_string())?;
+    let devices = rx
+        .await
+        .map_err(|_| "配对查询响应失败".to_string())?
+        .map_err(|e| e.to_string())?;
+    Ok(devices.into_iter().map(|d| PairedDeviceInfo {
+        device_id: d.device_id,
+        device_name: d.device_name,
+        paired_at: d.paired_at,
+    }).collect())
+}
+
+/// 移除已配对设备 IPC 命令
+#[tauri::command]
+async fn remove_pairing(state: tauri::State<'_, AppState>, device_id: String) -> Result<(), String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state
+        .pairing_tx
+        .send(app::PairingOp::Remove { device_id, reply: tx })
+        .map_err(|_| "配对通道已关闭".to_string())?;
+    rx.await
+        .map_err(|_| "移除配对响应失败".to_string())?
+        .map_err(|e| e.to_string())
 }
 
 /// 获取控制台日志
@@ -200,9 +253,12 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_devices,
             get_history,
+            clear_history,
             open_devtools,
             get_console_logs,
             copy_to_clipboard,
+            get_paired_devices,
+            remove_pairing,
         ])
         .setup(move |app| {
             // 创建系统托盘
@@ -219,6 +275,9 @@ fn main() {
                     }
                 })
                 .build(app)?;
+
+            #[cfg(target_os = "macos")]
+            app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
 
             let app_handle = app.handle().clone();
 

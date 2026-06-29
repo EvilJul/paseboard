@@ -265,6 +265,32 @@
             color: #c4612f;
         }
 
+        .badge.paired {
+            background: #d1fae5;
+            color: #166534;
+        }
+
+        .badge.unpaired {
+            background: #f1f5f9;
+            color: #64748b;
+        }
+
+        .unpair-btn {
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            font-size: 12px;
+            color: #94a3b8;
+            padding: 2px 6px;
+            border-radius: 4px;
+            transition: all 0.15s;
+        }
+
+        .unpair-btn:hover {
+            background: #fef2f2;
+            color: #ef4444;
+        }
+
         /* 加载状态 */
         .loading {
             text-align: center;
@@ -543,6 +569,7 @@
                             <tr>
                                 <th>设备名称</th>
                                 <th>状态</th>
+                                <th>配对</th>
                                 <th>IP 地址</th>
                                 <th>端口</th>
                             </tr>
@@ -563,6 +590,9 @@
 
             <!-- 历史记录 -->
             <div id="history" class="tab-pane">
+                <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+                    <button id="clear-history-btn" class="devtools-btn" style="color:#c4612f;font-size:13px;padding:4px 12px;" title="清空全部历史记录">清空全部历史</button>
+                </div>
                 <div class="table-container">
                     <table>
                         <thead>
@@ -717,13 +747,17 @@
             const status = document.getElementById('status-text');
 
             try {
-                const devices = await invoke('get_devices');
+                const [devices, pairedDevices] = await Promise.all([
+                    invoke('get_devices'),
+                    invoke('get_paired_devices'),
+                ]);
+                const pairedSet = new Set(pairedDevices.map(d => d.device_id));
                 status.textContent = `已发现 ${devices.length} 台设备`;
 
                 if (devices.length === 0) {
                     tbody.innerHTML = `
                         <tr>
-                            <td colspan="4">
+                            <td colspan="5">
                                 <div class="empty-state">
                                     <div class="empty-state-icon">📡</div>
                                     <div class="empty-state-title">未发现设备</div>
@@ -735,21 +769,28 @@
                     return;
                 }
 
-                tbody.innerHTML = devices.map(device => `
+                tbody.innerHTML = devices.map(device => {
+                    const isPaired = pairedSet.has(device.id);
+                    return `
                     <tr>
                         <td>${device.name}</td>
                         <td>
                             <span class="status-dot ${device.is_connected ? 'online' : 'offline'}"></span>
                         </td>
+                        <td>
+                            ${isPaired
+                                ? '<span class="badge paired">已配对</span>'
+                                : '<span class="badge unpaired">未配对</span>'}
+                        </td>
                         <td>${device.addr}</td>
-                        <td>${device.port}</td>
+                        <td>${device.port}${isPaired ? ` <button class="unpair-btn" onclick="unpairDevice('${escapeAttr(device.id)}','${escapeAttr(device.name)}')" title="解除配对">解除</button>` : ''}</td>
                     </tr>
-                `).join('');
+                `}).join('');
             } catch (error) {
                 console.error('加载设备列表失败:', error);
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="4">
+                        <td colspan="5">
                             <div class="empty-state">
                                 <div class="empty-state-icon">❌</div>
                                 <div class="empty-state-title">加载失败</div>
@@ -848,6 +889,21 @@
             }
         }
 
+        // 解除设备配对
+        async function unpairDevice(deviceId, deviceName) {
+            if (!confirm(`确定解除与设备 "${deviceName}" 的配对？解除后该设备将无法同步粘贴板。`)) {
+                return;
+            }
+            try {
+                await invoke('remove_pairing', { deviceId });
+                showToast(`已解除与 "${deviceName}" 的配对`);
+                loadDevices();
+            } catch (error) {
+                console.error('解除配对失败:', error);
+                showToast('解除配对失败: ' + error);
+            }
+        }
+
         // 转义 HTML
         function escapeHtml(text) {
             const div = document.createElement('div');
@@ -871,6 +927,22 @@
                 loadHistory();
             }
         }, 5000);
+
+        // 清空历史记录
+        document.getElementById('clear-history-btn').addEventListener('click', async () => {
+            if (!confirm('确定要清空所有历史记录？此操作不可撤销。')) {
+                return;
+            }
+
+            try {
+                await invoke('clear_history');
+                showToast('历史记录已清空');
+                loadHistory();
+            } catch (error) {
+                console.error('清空历史记录失败:', error);
+                showToast('清空失败: ' + error);
+            }
+        });
 
         // 导出函数到全局作用域（用于 onclick）
         window.copyToClipboard = copyToClipboard;

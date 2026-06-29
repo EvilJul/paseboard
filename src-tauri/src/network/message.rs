@@ -43,6 +43,32 @@ pub enum MessageType {
         timestamp: i64,
     },
 
+    /// 配对请求消息
+    #[serde(rename = "pairing_request")]
+    PairingRequest {
+        /// 来源设备 ID
+        device_id: String,
+        /// 来源设备名称
+        device_name: String,
+        /// 公钥指纹（SHA256 前 16 字符）
+        device_pk_fingerprint: String,
+        /// Unix 时间戳（秒）
+        timestamp: i64,
+    },
+
+    /// 配对响应消息
+    #[serde(rename = "pairing_response")]
+    PairingResponse {
+        /// 响应设备 ID
+        device_id: String,
+        /// 是否接受配对
+        accepted: bool,
+        /// 拒绝原因（可选）
+        reason: Option<String>,
+        /// Unix 时间戳（秒）
+        timestamp: i64,
+    },
+
     /// 加密消息（非对称加密后的载荷）
     #[serde(rename = "encrypted")]
     Encrypted {
@@ -102,6 +128,32 @@ impl Message {
         }
     }
 
+    /// 创建配对请求消息
+    pub fn new_pairing_request(device_id: String, device_name: String, device_pk_fingerprint: String) -> Self {
+        let timestamp = chrono::Utc::now().timestamp();
+        Self {
+            msg_type: MessageType::PairingRequest {
+                device_id,
+                device_name,
+                device_pk_fingerprint,
+                timestamp,
+            },
+        }
+    }
+
+    /// 创建配对响应消息
+    pub fn new_pairing_response(device_id: String, accepted: bool, reason: Option<String>) -> Self {
+        let timestamp = chrono::Utc::now().timestamp();
+        Self {
+            msg_type: MessageType::PairingResponse {
+                device_id,
+                accepted,
+                reason,
+                timestamp,
+            },
+        }
+    }
+
     /// 获取消息 UUID（仅 Clipboard 类型有效）
     pub fn uuid(&self) -> Option<&str> {
         match &self.msg_type {
@@ -111,12 +163,46 @@ impl Message {
         }
     }
 
+    /// 获取配对请求的设备名称（仅 PairingRequest 有效）
+    pub fn pairing_device_name(&self) -> Option<&str> {
+        match &self.msg_type {
+            MessageType::PairingRequest { device_name, .. } => Some(device_name),
+            _ => None,
+        }
+    }
+
+    /// 获取配对请求的公钥指纹（仅 PairingRequest 有效）
+    pub fn pairing_pk_fingerprint(&self) -> Option<&str> {
+        match &self.msg_type {
+            MessageType::PairingRequest { device_pk_fingerprint, .. } => Some(device_pk_fingerprint),
+            _ => None,
+        }
+    }
+
+    /// 获取配对响应的 accepted 状态（仅 PairingResponse 有效）
+    pub fn pairing_accepted(&self) -> Option<bool> {
+        match &self.msg_type {
+            MessageType::PairingResponse { accepted, .. } => Some(*accepted),
+            _ => None,
+        }
+    }
+
+    /// 获取配对拒绝原因（仅 PairingResponse 有效）
+    pub fn pairing_reason(&self) -> Option<Option<&str>> {
+        match &self.msg_type {
+            MessageType::PairingResponse { reason, .. } => Some(reason.as_deref()),
+            _ => None,
+        }
+    }
+
     /// 获取消息来源设备 ID
     pub fn device_id(&self) -> &str {
         match &self.msg_type {
             MessageType::Clipboard { device_id, .. }
             | MessageType::Heartbeat { device_id, .. }
-            | MessageType::HeartbeatAck { device_id, .. } => device_id,
+            | MessageType::HeartbeatAck { device_id, .. }
+            | MessageType::PairingRequest { device_id, .. }
+            | MessageType::PairingResponse { device_id, .. } => device_id,
             MessageType::Encrypted { .. } => "unknown",
         }
     }
@@ -126,7 +212,9 @@ impl Message {
         match &self.msg_type {
             MessageType::Clipboard { timestamp, .. }
             | MessageType::Heartbeat { timestamp, .. }
-            | MessageType::HeartbeatAck { timestamp, .. } => *timestamp,
+            | MessageType::HeartbeatAck { timestamp, .. }
+            | MessageType::PairingRequest { timestamp, .. }
+            | MessageType::PairingResponse { timestamp, .. } => *timestamp,
             MessageType::Encrypted { .. } => 0,
         }
     }
@@ -153,6 +241,21 @@ impl Message {
     /// 判断是否为粘贴板消息
     pub fn is_clipboard(&self) -> bool {
         matches!(self.msg_type, MessageType::Clipboard { .. })
+    }
+
+    /// 判断是否为配对请求
+    pub fn is_pairing_request(&self) -> bool {
+        matches!(self.msg_type, MessageType::PairingRequest { .. })
+    }
+
+    /// 判断是否为配对响应
+    pub fn is_pairing_response(&self) -> bool {
+        matches!(self.msg_type, MessageType::PairingResponse { .. })
+    }
+
+    /// 判断是否为配对消息（请求或响应）
+    pub fn is_pairing(&self) -> bool {
+        matches!(self.msg_type, MessageType::PairingRequest { .. } | MessageType::PairingResponse { .. })
     }
 
     /// 判断是否为加密消息
@@ -208,6 +311,12 @@ impl Message {
             MessageType::Heartbeat { device_id, .. }
             | MessageType::HeartbeatAck { device_id, .. } => {
                 device_id.len() + 50
+            }
+            MessageType::PairingRequest { device_id, device_name, device_pk_fingerprint, .. } => {
+                device_id.len() + device_name.len() + device_pk_fingerprint.len() + 80
+            }
+            MessageType::PairingResponse { device_id, reason, .. } => {
+                device_id.len() + reason.as_ref().map(|r| r.len()).unwrap_or(0) + 80
             }
             MessageType::Encrypted {
                 nonce,
@@ -283,6 +392,60 @@ mod tests {
         assert!(msg.is_clipboard());
         assert_eq!(msg.content(), Some("Test"));
         assert_eq!(msg.device_id(), "device-1");
+    }
+
+    #[test]
+    fn test_pairing_request_creation() {
+        let msg = Message::new_pairing_request(
+            "device-1".to_string(),
+            "My MacBook".to_string(),
+            "a1b2c3d4e5f6a7b8".to_string(),
+        );
+
+        assert!(msg.is_pairing_request());
+        assert!(!msg.is_pairing_response());
+        assert!(msg.is_pairing());
+        assert_eq!(msg.device_id(), "device-1");
+        assert_eq!(msg.pairing_device_name(), Some("My MacBook"));
+        assert_eq!(msg.pairing_pk_fingerprint(), Some("a1b2c3d4e5f6a7b8"));
+        assert_eq!(msg.content(), None);
+    }
+
+    #[test]
+    fn test_pairing_response_creation() {
+        let accepted = Message::new_pairing_response(
+            "device-2".to_string(),
+            true,
+            None,
+        );
+        assert!(accepted.is_pairing_response());
+        assert!(accepted.is_pairing());
+        assert_eq!(accepted.device_id(), "device-2");
+        assert_eq!(accepted.pairing_accepted(), Some(true));
+        assert_eq!(accepted.pairing_reason(), Some(None));
+
+        let rejected = Message::new_pairing_response(
+            "device-2".to_string(),
+            false,
+            Some("cooldown".to_string()),
+        );
+        assert!(rejected.is_pairing_response());
+        assert_eq!(rejected.pairing_accepted(), Some(false));
+        assert_eq!(rejected.pairing_reason(), Some(Some("cooldown")));
+    }
+
+    #[test]
+    fn test_pairing_message_serialization() {
+        let msg = Message::new_pairing_request(
+            "device-1".to_string(),
+            "My MacBook".to_string(),
+            "a1b2c3d4e5f6a7b8".to_string(),
+        );
+
+        let json = msg.to_json().unwrap();
+        assert!(json.contains("\"type\":\"pairing_request\""));
+        assert!(json.contains("\"device_name\":\"My MacBook\""));
+        assert!(json.contains("\"device_pk_fingerprint\":\"a1b2c3d4e5f6a7b8\""));
     }
 
     #[test]

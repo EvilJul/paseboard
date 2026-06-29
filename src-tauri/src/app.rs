@@ -75,6 +75,39 @@ pub struct StorageQuery {
     pub reply: tokio::sync::oneshot::Sender<anyhow::Result<Vec<crate::clipboard::storage::HistoryItem>>>,
 }
 
+/// 历史记录清空请求（带 oneshot 回复通道）
+pub struct StorageClear {
+    pub reply: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
+}
+
+/// 配对存储操作
+pub enum PairingOp {
+    Check {
+        device_id: String,
+        reply: tokio::sync::oneshot::Sender<anyhow::Result<bool>>,
+    },
+    Add {
+        device_id: String,
+        device_name: String,
+        reply: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
+    },
+    Remove {
+        device_id: String,
+        reply: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
+    },
+    List {
+        reply: tokio::sync::oneshot::Sender<anyhow::Result<Vec<crate::clipboard::storage::PairedDevice>>>,
+    },
+    CheckCooldown {
+        device_id: String,
+        reply: tokio::sync::oneshot::Sender<anyhow::Result<bool>>,
+    },
+    SetCooldown {
+        device_id: String,
+        reply: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
+    },
+}
+
 /// 应用主协调器
 pub struct App {
     /// 应用配置
@@ -99,6 +132,10 @@ pub struct App {
     storage_tx: mpsc::UnboundedSender<StorageRequest>,
     /// 历史存储查询发送通道
     storage_query_tx: mpsc::UnboundedSender<StorageQuery>,
+    /// 历史存储清空发送通道
+    storage_clear_tx: mpsc::UnboundedSender<StorageClear>,
+    /// 配对操作发送通道
+    pairing_tx: mpsc::UnboundedSender<PairingOp>,
     /// 去重服务
     dedup_service: Arc<DeduplicationService>,
     /// 已连接的客户端（设备 ID -> WebSocketClient）
@@ -117,6 +154,10 @@ pub struct IpcHandles {
     pub mdns: Arc<MdnsService>,
     /// 历史存储查询通道
     pub storage_query_tx: mpsc::UnboundedSender<StorageQuery>,
+    /// 历史存储清空通道
+    pub storage_clear_tx: mpsc::UnboundedSender<StorageClear>,
+    /// 配对操作通道
+    pub pairing_tx: mpsc::UnboundedSender<PairingOp>,
     /// 已连接的出站 WebSocket 客户端
     pub clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
     /// 已连接的入站远程设备 ID 集合
@@ -209,12 +250,16 @@ impl App {
         let (storage_tx, storage_rx) = mpsc::unbounded_channel();
         // 创建存储查询通道
         let (storage_query_tx, storage_query_rx) = mpsc::unbounded_channel::<StorageQuery>();
+        // 创建存储清空通道
+        let (storage_clear_tx, storage_clear_rx) = mpsc::unbounded_channel::<StorageClear>();
+        // 创建配对操作通道
+        let (pairing_tx, pairing_rx) = mpsc::unbounded_channel::<PairingOp>();
 
         // 启动存储处理任务（在独立线程中，因为 rusqlite 不是 Send）
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("创建存储任务运行时失败");
             rt.block_on(async move {
-                Self::handle_storage_requests(history_storage, storage_rx, storage_query_rx).await;
+                Self::handle_storage_requests(history_storage, storage_rx, storage_query_rx, storage_clear_rx, pairing_rx).await;
             });
         });
 
@@ -232,6 +277,8 @@ impl App {
             clipboard_writer: Arc::new(clipboard_writer),
             storage_tx,
             storage_query_tx,
+            storage_clear_tx,
+            pairing_tx,
             dedup_service: Arc::new(dedup_service),
             clients: Arc::new(RwLock::new(HashMap::new())),
             server_connected_device_ids,
@@ -244,6 +291,8 @@ impl App {
         mut storage: HistoryStorage,
         mut storage_rx: mpsc::UnboundedReceiver<StorageRequest>,
         mut storage_query_rx: mpsc::UnboundedReceiver<StorageQuery>,
+        mut storage_clear_rx: mpsc::UnboundedReceiver<StorageClear>,
+        mut pairing_rx: mpsc::UnboundedReceiver<PairingOp>,
     ) {
         info!("存储处理任务已启动");
 
@@ -259,6 +308,46 @@ impl App {
                         .query_recent(query.limit)
                         .map_err(|e| anyhow::anyhow!("查询历史记录失败: {}", e));
                     let _ = query.reply.send(result);
+                }
+                Some(clear) = storage_clear_rx.recv() => {
+                    let result = storage
+                        .clear_all()
+                        .map_err(|e| anyhow::anyhow!("清空历史记录失败: {}", e));
+                    let _ = clear.reply.send(result);
+                }
+                Some(op) = pairing_rx.recv() => {
+                    match op {
+                        PairingOp::Check { device_id, reply } => {
+                            let result = storage.is_paired(&device_id)
+                                .map_err(|e| anyhow::anyhow!("配对检查失败: {}", e));
+                            let _ = reply.send(result);
+                        }
+                        PairingOp::Add { device_id, device_name, reply } => {
+                            let result = storage.add_paired_device(&device_id, &device_name)
+                                .map_err(|e| anyhow::anyhow!("添加配对设备失败: {}", e));
+                            let _ = reply.send(result);
+                        }
+                        PairingOp::Remove { device_id, reply } => {
+                            let result = storage.remove_paired_device(&device_id)
+                                .map_err(|e| anyhow::anyhow!("移除配对设备失败: {}", e));
+                            let _ = reply.send(result);
+                        }
+                        PairingOp::List { reply } => {
+                            let result = storage.list_paired_devices()
+                                .map_err(|e| anyhow::anyhow!("获取配对设备列表失败: {}", e));
+                            let _ = reply.send(result);
+                        }
+                        PairingOp::CheckCooldown { device_id, reply } => {
+                            let result = storage.is_in_cooldown(&device_id)
+                                .map_err(|e| anyhow::anyhow!("冷却检查失败: {}", e));
+                            let _ = reply.send(result);
+                        }
+                        PairingOp::SetCooldown { device_id, reply } => {
+                            let result = storage.set_cooldown(&device_id)
+                                .map_err(|e| anyhow::anyhow!("设置冷却失败: {}", e));
+                            let _ = reply.send(result);
+                        }
+                    }
                 }
                 else => break,
             }
@@ -282,6 +371,8 @@ impl App {
             clipboard_writer,
             storage_tx,
             storage_query_tx: _, // 已在 Self 中持有，无须再传递
+            storage_clear_tx: _, // 已在 Self 中持有，无须再传递
+            pairing_tx, // 同时传入 handle_incoming_messages_task
             dedup_service,
             clients,
             server_connected_device_ids,
@@ -323,6 +414,7 @@ impl App {
             let dedup_service_for_discovery = Arc::clone(&dedup_service);
             let clipboard_writer_for_discovery = Arc::clone(&clipboard_writer);
             let storage_tx_for_discovery = storage_tx.clone();
+            let pairing_tx_for_discovery = pairing_tx.clone();
 
             tokio::spawn(async move {
                 Self::handle_device_discovery_task(
@@ -334,6 +426,7 @@ impl App {
                     dedup_service_for_discovery,
                     clipboard_writer_for_discovery,
                     storage_tx_for_discovery,
+                    pairing_tx_for_discovery,
                 ).await;
             });
         }
@@ -364,7 +457,10 @@ impl App {
             ws_server_rx,
             dedup_service,
             clipboard_writer,
-            storage_tx,
+            storage_tx.clone(),
+            pairing_tx.clone(),
+            Arc::clone(&ws_server),
+            config.clone(),
         ).await;
 
         Ok(())
@@ -382,6 +478,7 @@ impl App {
         dedup_service: Arc<DeduplicationService>,
         clipboard_writer: Arc<ClipboardWriter>,
         storage_tx: mpsc::UnboundedSender<StorageRequest>,
+        pairing_tx: mpsc::UnboundedSender<PairingOp>,
     ) {
         info!("设备发现流程已启动");
 
@@ -433,6 +530,7 @@ impl App {
                     Arc::clone(&dedup_service),
                     Arc::clone(&clipboard_writer),
                     storage_tx.clone(),
+                    pairing_tx.clone(),
                 ).await;
             }
         }
@@ -451,6 +549,7 @@ impl App {
         dedup_service: Arc<DeduplicationService>,
         clipboard_writer: Arc<ClipboardWriter>,
         storage_tx: mpsc::UnboundedSender<StorageRequest>,
+        pairing_tx: mpsc::UnboundedSender<PairingOp>,
     ) {
         // 避免双向连接冲突：只有本设备 ID 较小时才主动连接
         info!("设备 ID 比较: 本设备={}, 远程设备={}, 本设备<远程={}", 
@@ -482,11 +581,24 @@ impl App {
         let device_name = device.name.clone();
         let device_id_for_connect = device.id.clone();
         let clients_for_cleanup = Arc::clone(&clients);
+        let config_for_connect = config.clone();
 
         tokio::spawn(async move {
             match client_for_connect.connect().await {
                 Ok(_) => {
                     info!("成功连接到设备: {}", device_name);
+
+                    // 发送配对请求
+                    let pairing_req = Message::new_pairing_request(
+                        config_for_connect.device_id.clone(),
+                        config_for_connect.device_name.clone(),
+                        format!("{:x}", Sha256::digest(config_for_connect.device_id.as_bytes())),
+                    );
+                    if let Err(e) = client_for_connect.send(pairing_req).await {
+                        error!("发送配对请求到 {} 失败: {}", device_name, e);
+                    } else {
+                        info!("已向设备 {} 发送配对请求", device_name);
+                    }
 
                     // 等待断开通知，然后清理客户端状态
                     let mut disc_rx = client_for_connect.disconnect_receiver();
@@ -509,10 +621,93 @@ impl App {
         // 启动消息接收任务
         let device_name = device.name.clone();
         let device_id_for_rx = device.id.clone();
+        let config_for_rx = config.clone();
+        let client_for_rx_send = Arc::clone(&client);
 
         tokio::spawn(async move {
             while let Some(msg) = client_rx.recv().await {
+                // ── 配对响应处理 ──
+                if msg.is_pairing_response() {
+                    let remote_id = msg.device_id().to_string();
+                    let accepted = msg.pairing_accepted().unwrap_or(false);
+                    let reason = msg.pairing_reason().flatten();
+
+                    if accepted {
+                        info!("设备 {} 已接受配对请求，开始同步粘贴板", device_name);
+                        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                        let _ = pairing_tx.send(PairingOp::Add {
+                            device_id: remote_id.clone(),
+                            device_name: device_name.clone(),
+                            reply: reply_tx,
+                        });
+                        if let Ok(Ok(_)) = reply_rx.await {
+                            info!("设备 {} 已添加至本地配对列表", device_name);
+                        }
+                    } else {
+                        warn!("设备 {} 拒绝配对: {:?}", device_name, reason);
+                    }
+                    continue;
+                }
+
+                // ── 配对请求处理（对方主动发起配对）──
+                if msg.is_pairing_request() {
+                    let remote_id = msg.device_id().to_string();
+                    let remote_name = msg.pairing_device_name().unwrap_or(&remote_id).to_string();
+
+                    // 检查是否已配对
+                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                    let _ = pairing_tx.send(PairingOp::Check { device_id: remote_id.clone(), reply: reply_tx });
+
+                    let is_paired = reply_rx.await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .unwrap_or(false);
+
+                    if is_paired {
+                        info!("设备 {} 已配对，自动接受", remote_name);
+                        let response = Message::new_pairing_response(
+                            config_for_rx.device_id.clone(),
+                            true,
+                            None,
+                        );
+                        let _ = client_for_rx_send.send(response).await;
+                    } else {
+                        info!("设备 {} 未配对，自动接受并添加至配对列表（零配置模式）", remote_name);
+                        let response = Message::new_pairing_response(
+                            config_for_rx.device_id.clone(),
+                            true,
+                            None,
+                        );
+                        let _ = client_for_rx_send.send(response).await;
+
+                        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                        let _ = pairing_tx.send(PairingOp::Add {
+                            device_id: remote_id,
+                            device_name: remote_name,
+                            reply: reply_tx,
+                        });
+                        let _ = reply_rx.await;
+                    }
+                    continue;
+                }
+
+                // ── 粘贴板消息处理 ──
                 if msg.is_clipboard() {
+                    // 配对检查：仅处理已配对设备的消息
+                    let remote_id = msg.device_id().to_string();
+                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                    let _ = pairing_tx.send(PairingOp::Check { device_id: remote_id.clone(), reply: reply_tx });
+
+                    let is_paired = reply_rx.await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .unwrap_or(false);
+
+                    if !is_paired {
+                        debug!("设备 {} 未配对，跳过其粘贴板消息", device_name);
+                        continue;
+                    }
+
                     if let (Some(content), Some(uuid)) = (msg.content(), msg.uuid()) {
                         // 计算内容哈希
                         let content_hash = Self::calculate_hash(content);
@@ -545,6 +740,7 @@ impl App {
                             }
                         }
                     }
+                    continue;
                 }
             }
         });
@@ -617,13 +813,88 @@ impl App {
         dedup_service: Arc<DeduplicationService>,
         clipboard_writer: Arc<ClipboardWriter>,
         storage_tx: mpsc::UnboundedSender<StorageRequest>,
+        pairing_tx: mpsc::UnboundedSender<PairingOp>,
+        ws_server: Arc<WebSocketServer>,
+        config: AppConfig,
     ) {
         info!("消息接收处理流程已启动");
 
         let mut ws_server_rx = ws_server_rx.write().await;
 
         while let Some(msg) = ws_server_rx.recv().await {
+            // ── 配对请求处理 ──
+            if msg.is_pairing_request() {
+                let remote_id = msg.device_id().to_string();
+                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                let _ = pairing_tx.send(PairingOp::Check { device_id: remote_id.clone(), reply: reply_tx });
+
+                let is_paired = reply_rx.await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .unwrap_or(false);
+
+                if is_paired {
+                    info!("设备 {} 已配对，自动接受", remote_id);
+                } else {
+                    info!("设备 {} 未配对，自动接受并添加至配对列表（零配置模式）", remote_id);
+                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                    let _ = pairing_tx.send(PairingOp::Add {
+                        device_id: remote_id.clone(),
+                        device_name: remote_id.clone(), // 从消息中拿不到设备名，使用 ID 作为 fallback
+                        reply: reply_tx,
+                    });
+                    let _ = reply_rx.await;
+                }
+                let response = Message::new_pairing_response(
+                    config.device_id.clone(),
+                    true,
+                    None,
+                );
+                let _ = ws_server.broadcast(&response).await;
+                continue;
+            }
+
+            // ── 配对响应处理 ──
+            if msg.is_pairing_response() {
+                let remote_id = msg.device_id().to_string();
+                let accepted = msg.pairing_accepted().unwrap_or(false);
+                let reason = msg.pairing_reason().flatten();
+
+                info!("收到设备 {} 的配对响应: accepted={}, reason={:?}", remote_id, accepted, reason);
+
+                if accepted {
+                    // 需要 device_name 来添加配对记录，但从响应消息中拿不到设备名
+                    // 从 mDNS 匹配（响应消息的 device_id 即对方唯一标识）
+                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                    let _ = pairing_tx.send(PairingOp::Add {
+                        device_id: remote_id.clone(),
+                        device_name: remote_id.clone(),
+                        reply: reply_tx,
+                    });
+                    if let Ok(Ok(_)) = reply_rx.await {
+                        info!("设备 {} 已添加至配对列表", remote_id);
+                    }
+                }
+                continue;
+            }
+
+            // ── 粘贴板消息处理 ──
             if msg.is_clipboard() {
+                // 配对检查：仅处理已配对设备的消息
+                let remote_id = msg.device_id().to_string();
+                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                let _ = pairing_tx.send(PairingOp::Check { device_id: remote_id.clone(), reply: reply_tx });
+
+                let is_paired = reply_rx.await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .unwrap_or(false);
+
+                if !is_paired {
+                    debug!("设备 {} 未配对，跳过其粘贴板消息", remote_id);
+                    continue;
+                }
+
                 if let (Some(content), Some(uuid)) = (msg.content(), msg.uuid()) {
                     // 计算内容哈希
                     let content_hash = Self::calculate_hash(content);
@@ -636,17 +907,16 @@ impl App {
                     // 写入粘贴板
                     match clipboard_writer.write(content.to_string(), uuid.to_string()).await {
                         Ok(true) => {
-                            info!("收到粘贴板内容，已写入本地，内容长度: {} 字节", content.len());
+                            info!("收到已配对设备 {} 的粘贴板内容，已写入本地，内容长度: {} 字节", remote_id, content.len());
 
                             // 标记消息已处理
                             dedup_service.mark_message_processed(uuid.to_string(), content_hash).await;
 
                             // 发送存储请求
-                            let device_id = msg.device_id();
                             let _ = storage_tx.send(StorageRequest {
                                 content: content.to_string(),
-                                device_id: device_id.to_string(),
-                                device_name: "Unknown Device".to_string(), // 服务端接收的消息可能没有设备名称
+                                device_id: remote_id,
+                                device_name: "Unknown Device".to_string(),
                             });
                         }
                         Ok(false) => {
@@ -674,6 +944,8 @@ impl App {
             identity: Arc::clone(&self.identity),
             mdns: Arc::clone(&self.mdns),
             storage_query_tx: self.storage_query_tx.clone(),
+            storage_clear_tx: self.storage_clear_tx.clone(),
+            pairing_tx: self.pairing_tx.clone(),
             clients: Arc::clone(&self.clients),
             server_connected_device_ids: Arc::clone(&self.server_connected_device_ids),
         }

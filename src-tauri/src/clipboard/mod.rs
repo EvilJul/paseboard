@@ -15,5 +15,5 @@ pub mod dedup;
 // 重新导出主要类型
 pub use monitor::{ClipboardMonitor, ClipboardChange};
 pub use writer::ClipboardWriter;
-pub use storage::{HistoryStorage, HistoryItem};
+pub use storage::{HistoryStorage, HistoryItem, PairedDevice};
 pub use dedup::DeduplicationService;
