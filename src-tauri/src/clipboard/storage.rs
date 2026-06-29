@@ -159,6 +159,24 @@ impl HistoryStorage {
         let key_manager = KeyManager::new(db_path.as_ref().parent().unwrap_or_else(|| Path::new(".")))?;
         let key = key_manager.get_key();
 
+        // 使用密钥打开加密数据库并完成初始化
+        Self::open_with_key(db_path, key, key_manager.key_type())
+    }
+
+    /// 使用显式密钥打开加密数据库并初始化
+    ///
+    /// 内部构造入口：建立连接、执行 PRAGMA 加密、初始化表结构。
+    /// 由 `new` 复用（密钥来自 `KeyManager`），测试可注入独立密钥以隔离系统钥匙串。
+    ///
+    /// # Arguments
+    /// * `db_path` - 数据库文件路径
+    /// * `key` - SQLCipher 密钥（base64 编码）
+    /// * `key_type` - 密钥来源类型（"keychain" 或 "file"）
+    pub(crate) fn open_with_key<P: AsRef<Path>>(
+        db_path: P,
+        key: &str,
+        key_type: &str,
+    ) -> Result<Self, StorageError> {
         // 打开加密数据库连接
         let conn = Connection::open(db_path)?;
         conn.execute_batch(&format!(
@@ -169,7 +187,7 @@ impl HistoryStorage {
         // 初始化数据库表和索引
         Self::init_database(&conn)?;
 
-        Ok(Self { conn, key_type: key_manager.key_type().to_string() })
+        Ok(Self { conn, key_type: key_type.to_string() })
     }
 
     /// 获取密钥存储类型（用于 UI 显示）
@@ -395,12 +413,14 @@ impl HistoryStorage {
 mod tests {
     use super::*;
 
-    /// 创建临时数据库用于测试（每个测试独立目录，避免密钥文件冲突）
+    /// 创建临时数据库用于测试（每个测试独立目录 + 独立随机密钥，完全隔离系统钥匙串）
     fn create_temp_storage() -> HistoryStorage {
         let temp_dir = std::env::temp_dir().join(format!("paseboard_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("history.db");
-        HistoryStorage::new(&db_path).unwrap()
+        // 测试侧生成独立随机密钥，直接走 open_with_key，不读写系统钥匙串
+        let key = KeyManager::generate_key();
+        HistoryStorage::open_with_key(&db_path, &key, "file").unwrap()
     }
 
     #[test]
@@ -689,16 +709,18 @@ mod tests {
         let temp_dir = std::env::temp_dir().join(format!("paseboard_reopen_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("history.db");
+        // 使用独立随机密钥，两次打开复用同一密钥，完全隔离系统钥匙串
+        let key = KeyManager::generate_key();
 
         // 第一次打开，插入数据
         {
-            let mut storage = HistoryStorage::new(&db_path).unwrap();
+            let mut storage = HistoryStorage::open_with_key(&db_path, &key, "file").unwrap();
             storage.insert("跨会话数据", "device-1", "设备1").unwrap();
         }
 
-        // 第二次打开，验证数据仍然存在（使用相同密钥文件）
+        // 第二次打开，验证数据仍然存在（使用相同密钥）
         {
-            let storage = HistoryStorage::new(&db_path).unwrap();
+            let storage = HistoryStorage::open_with_key(&db_path, &key, "file").unwrap();
             let items = storage.query_recent(10).unwrap();
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].content, "跨会话数据");
