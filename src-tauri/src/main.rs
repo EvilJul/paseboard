@@ -241,6 +241,12 @@ fn main() {
                         app_handle.manage(lb);
                     }
 
+                    // 初始化完成后再显示主窗口（避免前端在 manage() 前调用 IPC 命令）
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+
                     // 运行应用主循环
                     if let Err(e) = app.run().await {
                         eprintln!("应用运行失败: {}", e);

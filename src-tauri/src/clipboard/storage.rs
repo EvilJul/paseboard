@@ -160,7 +160,26 @@ impl HistoryStorage {
         let key = key_manager.get_key();
 
         // 使用密钥打开加密数据库并完成初始化
-        Self::open_with_key(db_path, key, key_manager.key_type())
+        // 如果旧版明文 SQLite 文件与 SQLCipher 不兼容，备份旧文件并重建
+        match Self::open_with_key(db_path.as_ref(), key, key_manager.key_type()) {
+            Ok(storage) => Ok(storage),
+            Err(StorageError::DatabaseError(ref e))
+                if e.to_string().contains("not a database") =>
+            {
+                log::warn!(
+                    "检测到旧版未加密数据库，正在备份并重建加密数据库: {}",
+                    db_path.as_ref().display()
+                );
+                let backup = db_path.as_ref().with_extension("db.bak");
+                if db_path.as_ref().exists() {
+                    std::fs::rename(db_path.as_ref(), &backup)
+                        .map_err(|e| StorageError::KeyFileError(format!("备份旧数据库失败: {}", e)))?;
+                }
+                log::info!("旧数据库已备份至: {}", backup.display());
+                Self::open_with_key(db_path.as_ref(), key, key_manager.key_type())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// 使用显式密钥打开加密数据库并初始化

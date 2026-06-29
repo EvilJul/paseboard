@@ -45,7 +45,7 @@
         "width": 460,
         "height": 720,
         "center": true,
-        "visible": true
+        "visible": false
       }
     ],
     "security": {
