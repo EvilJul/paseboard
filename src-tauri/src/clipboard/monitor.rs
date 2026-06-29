@@ -58,8 +58,16 @@ impl ClipboardMonitor {
 
     /// 启动监听循环
     ///
-    /// 该方法会阻塞当前任务，持续轮询粘贴板内容
+    /// 该方法会阻塞当前任务，持续轮询粘贴板内容。
+    /// 启动时先读取当前剪贴板并记录哈希，避免重启后重复插入已有内容。
     pub async fn start(mut self) {
+        // 启动时预读剪贴板，设置 last_hash，防止重启后重复插入
+        if let Ok((content, _)) = self.read_clipboard().await {
+            let hash = Self::calculate_hash(&content);
+            log::info!("启动时预读剪贴板，初始哈希: {}...", &hash[..8]);
+            self.last_hash = Some(hash);
+        }
+
         log::info!("粘贴板监听器已启动，轮询间隔: {}ms", POLL_INTERVAL_MS);
 
         let mut ticker = interval(Duration::from_millis(POLL_INTERVAL_MS));
