@@ -5,6 +5,8 @@
 #[cfg(test)]
 mod integration_tests {
     use paseboard::network::{
+        crypto::CryptoTransport,
+        identity::IdentityManager,
         message::Message,
         websocket_client::WebSocketClient,
         websocket_server::WebSocketServer,
@@ -18,14 +20,28 @@ mod integration_tests {
         Arc::new(RwLock::new(HashSet::new()))
     }
 
+    fn create_test_crypto() -> Arc<CryptoTransport> {
+        let identity_path = std::env::temp_dir().join("paseboard_test_ws_int_id.pem");
+        let _ = std::fs::remove_file(&identity_path);
+        let identity = Arc::new(IdentityManager::new(identity_path.clone()).unwrap());
+        let crypto = Arc::new(CryptoTransport::new(identity));
+        let _ = std::fs::remove_file(&identity_path);
+        crypto
+    }
+
     /// 测试：服务端启动并接受客户端连接
     #[tokio::test]
     async fn test_server_client_connection() {
+        let crypto = create_test_crypto();
+        let crypto_server = Arc::clone(&crypto);
+        let crypto_client = Arc::clone(&crypto);
+
         // 启动服务端
         let (server, _server_rx) = WebSocketServer::new(
             "127.0.0.1:19527".to_string(),
             "server-device".to_string(),
             make_connected_ids(),
+            crypto_server,
         )
         .unwrap();
 
@@ -40,6 +56,7 @@ mod integration_tests {
         let (client, _client_rx) = WebSocketClient::new(
             "ws://127.0.0.1:19527".to_string(),
             "client-device".to_string(),
+            crypto_client,
         );
 
         let result = client.connect().await;
@@ -56,11 +73,14 @@ mod integration_tests {
     /// 测试：客户端向服务端发送消息
     #[tokio::test]
     async fn test_client_send_message() {
+        let crypto = create_test_crypto();
+
         // 启动服务端
         let (server, mut server_rx) = WebSocketServer::new(
             "127.0.0.1:19528".to_string(),
             "server-device".to_string(),
             make_connected_ids(),
+            Arc::clone(&crypto),
         )
         .unwrap();
 
@@ -74,6 +94,7 @@ mod integration_tests {
         let (client, _client_rx) = WebSocketClient::new(
             "ws://127.0.0.1:19528".to_string(),
             "client-device".to_string(),
+            Arc::clone(&crypto),
         );
 
         client.connect().await.unwrap();
@@ -104,11 +125,14 @@ mod integration_tests {
     /// 测试：服务端广播消息到客户端
     #[tokio::test]
     async fn test_server_broadcast() {
+        let crypto = create_test_crypto();
+
         // 启动服务端
         let (server, _server_rx) = WebSocketServer::new(
             "127.0.0.1:19529".to_string(),
             "server-device".to_string(),
             make_connected_ids(),
+            Arc::clone(&crypto),
         )
         .unwrap();
 
@@ -125,6 +149,7 @@ mod integration_tests {
         let (client, mut client_rx) = WebSocketClient::new(
             "ws://127.0.0.1:19529".to_string(),
             "client-device".to_string(),
+            Arc::clone(&crypto),
         );
 
         client.connect().await.unwrap();
@@ -155,11 +180,14 @@ mod integration_tests {
     /// 测试：心跳机制（简化测试，仅验证心跳消息不会导致错误）
     #[tokio::test]
     async fn test_heartbeat_mechanism() {
+        let crypto = create_test_crypto();
+
         // 启动服务端
         let (server, _server_rx) = WebSocketServer::new(
             "127.0.0.1:19530".to_string(),
             "server-device".to_string(),
             make_connected_ids(),
+            Arc::clone(&crypto),
         )
         .unwrap();
 
@@ -173,6 +201,7 @@ mod integration_tests {
         let (client, _client_rx) = WebSocketClient::new(
             "ws://127.0.0.1:19530".to_string(),
             "client-device".to_string(),
+            Arc::clone(&crypto),
         );
 
         client.connect().await.unwrap();
@@ -183,6 +212,41 @@ mod integration_tests {
 
         // 验证连接仍然活跃
         assert!(client.is_connected().await, "心跳后连接应该仍然活跃");
+    }
+
+    /// 测试：服务端追踪已连接设备 ID
+    #[tokio::test]
+    async fn test_server_tracks_connected_device_ids() {
+        let crypto = create_test_crypto();
+        let connected_ids = make_connected_ids();
+        let (server, _server_rx) = WebSocketServer::new(
+            "127.0.0.1:19533".to_string(),
+            "server-device".to_string(),
+            connected_ids.clone(),
+            Arc::clone(&crypto),
+        )
+        .unwrap();
+
+        tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+
+        sleep(Duration::from_millis(100)).await;
+
+        // 客户端连接后自动发送初始心跳
+        let (client, _client_rx) = WebSocketClient::new(
+            "ws://127.0.0.1:19533".to_string(),
+            "client-device".to_string(),
+            Arc::clone(&crypto),
+        );
+        client.connect().await.unwrap();
+
+        // 等待初始心跳被服务端处理
+        sleep(Duration::from_millis(500)).await;
+
+        // 验证 connected_device_ids 包含客户端 ID
+        let ids = connected_ids.read().await;
+        assert!(ids.contains("client-device"), "服务端应注册客户端设备 ID: {:?}", *ids);
     }
 
     /// 测试：消息大小限制
@@ -203,11 +267,14 @@ mod integration_tests {
     #[tokio::test]
     #[ignore]
     async fn test_multiple_clients_broadcast() {
+        let crypto = create_test_crypto();
+
         // 启动服务端
         let (server, _server_rx) = WebSocketServer::new(
             "127.0.0.1:19532".to_string(),
             "server-device".to_string(),
             make_connected_ids(),
+            Arc::clone(&crypto),
         )
         .unwrap();
 
@@ -224,11 +291,13 @@ mod integration_tests {
         let (client1, mut rx1) = WebSocketClient::new(
             "ws://127.0.0.1:19532".to_string(),
             "client-1".to_string(),
+            Arc::clone(&crypto),
         );
 
         let (client2, mut rx2) = WebSocketClient::new(
             "ws://127.0.0.1:19532".to_string(),
             "client-2".to_string(),
+            Arc::clone(&crypto),
         );
 
         // 连接所有客户端

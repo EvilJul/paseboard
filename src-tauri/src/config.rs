@@ -90,6 +90,11 @@ impl AppConfig {
     pub fn db_path(&self) -> anyhow::Result<PathBuf> {
         Ok(Self::config_dir()?.join("history.db"))
     }
+
+    /// 获取设备身份密钥文件路径
+    pub fn identity_path(&self) -> PathBuf {
+        Self::config_dir().unwrap().join("identity.pem")
+    }
 }
 
 #[cfg(test)]

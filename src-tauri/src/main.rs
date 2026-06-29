@@ -30,6 +30,7 @@ struct DeviceInfo {
     last_seen: u64,
     is_online: bool,
     is_connected: bool,
+    is_compatible: bool,
 }
 
 impl From<DeviceSnapshot> for DeviceInfo {
@@ -43,6 +44,7 @@ impl From<DeviceSnapshot> for DeviceInfo {
             last_seen: d.last_seen,
             is_online,
             is_connected: false,
+            is_compatible: d.is_compatible,
         }
     }
 }

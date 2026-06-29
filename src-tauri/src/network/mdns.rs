@@ -31,6 +31,11 @@ const PORT_RANGE_END: u16 = 9537;
 /// 心跳超时时间（秒）
 const HEARTBEAT_TIMEOUT_SECS: u64 = 30;
 
+/// 当前加密协议版本
+/// - "0": 未加密（v0.1.x）
+/// - "1": AES-256-GCM + ECDH（v0.2.0）
+pub const CRYPTO_VERSION: &str = "1";
+
 /// 设备信息
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
@@ -44,6 +49,10 @@ pub struct DeviceInfo {
     pub port: u16,
     /// 最后心跳时间（Unix 时间戳）
     pub last_seen: u64,
+    /// Base64 编码的 Ed25519 公钥（用于设备身份验证）
+    pub public_key: Option<String>,
+    /// 加密协议版本（"0"=未加密, "1"=AES-256-GCM+ECDH）
+    pub crypto_version: String,
 }
 
 impl DeviceInfo {
@@ -54,6 +63,11 @@ impl DeviceInfo {
             .unwrap()
             .as_secs();
         now - self.last_seen > HEARTBEAT_TIMEOUT_SECS
+    }
+
+    /// 检查设备的加密版本是否与当前版本兼容
+    pub fn is_compatible(&self) -> bool {
+        self.crypto_version == CRYPTO_VERSION
     }
 }
 
@@ -68,6 +82,10 @@ pub struct MdnsService {
     port: u16,
     /// 已发现的设备列表（设备 ID -> 设备信息）
     devices: Arc<Mutex<HashMap<String, DeviceInfo>>>,
+    /// Base64 编码的 Ed25519 公钥（用于 mDNS TXT 广播）
+    public_key_base64: Option<String>,
+    /// 本设备加密协议版本（用于 TXT 广播兼容性检测）
+    crypto_version: String,
 }
 
 impl MdnsService {
@@ -77,6 +95,8 @@ impl MdnsService {
     /// - `device_id` / `device_name`：设备标识
     /// - `bind_port`：mDNS 广播时使用的端口。必须与 WebSocketServer 实际监听的端口一致，
     ///                否则远端按 mDNS 通告的端口连接会被拒绝。
+    /// - `public_key_base64`：可选的 Base64 编码公钥，用于设备身份验证。
+    ///                        传入 `None` 兼容旧版本。
     ///
     /// # 返回
     /// - `Ok(MdnsService)`: 成功创建服务
@@ -85,6 +105,8 @@ impl MdnsService {
         device_id: String,
         device_name: String,
         bind_port: u16,
+        public_key_base64: Option<String>,
+        crypto_version: String,
     ) -> Result<Self, NetworkError> {
         // 初始化 mDNS 守护进程
         let daemon = ServiceDaemon::new().map_err(|e| {
@@ -97,6 +119,8 @@ impl MdnsService {
             device_name,
             port: bind_port,
             devices: Arc::new(Mutex::new(HashMap::new())),
+            public_key_base64,
+            crypto_version,
         })
     }
 
@@ -126,8 +150,12 @@ impl MdnsService {
         let service_name = format!("{}.{}", self.device_name, SERVICE_TYPE);
         log::debug!("完整服务名: {}", service_name);
 
-        // 创建 TXT 记录：设备 ID
-        let properties = [("device_id", self.device_id.as_str())];
+        // 创建 TXT 记录：设备 ID + 可选公钥 + 加密版本
+        let mut properties = vec![("device_id", self.device_id.as_str())];
+        if let Some(ref pk) = self.public_key_base64 {
+            properties.push(("pk", pk.as_str()));
+        }
+        properties.push(("cv", self.crypto_version.as_str()));
 
         // 主动检测本机在局域网接口上的 IP（不使用 enable_addr_auto()，
         // 因为 mdns-sd 0.7.5 的自动检测在 macOS 多网卡环境下经常选错接口）
@@ -302,6 +330,19 @@ impl MdnsService {
         // 获取端口
         let port = info.get_port();
 
+        // 解析公钥（可选）
+        let public_key = info
+            .get_properties()
+            .get("pk")
+            .map(|val| val.val_str().to_string());
+
+        // 解析加密版本（可选，不存在时默认为 "0" 表示未加密）
+        let crypto_version = info
+            .get_properties()
+            .get("cv")
+            .map(|val| val.val_str().to_string())
+            .unwrap_or_else(|| "0".to_string());
+
         // 当前时间戳
         let last_seen = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -314,6 +355,8 @@ impl MdnsService {
             addr,
             port,
             last_seen,
+            public_key,
+            crypto_version,
         })
     }
 
@@ -481,6 +524,8 @@ impl MdnsService {
                         .to_string();
                     let addr_str = parsed.get("addr").and_then(|v| v.as_str()).unwrap_or("");
                     let remote_port = parsed.get("port").and_then(|v| v.as_u64()).unwrap_or(9527) as u16;
+                    let public_key = parsed.get("public_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let crypto_version = parsed.get("crypto_version").and_then(|v| v.as_str()).unwrap_or("0").to_string();
 
                     // 优先使用源 IP（更可靠），仅当无法解析时使用 JSON 中的 addr
                     let addr = src_addr.ip();
@@ -499,6 +544,8 @@ impl MdnsService {
                             addr,
                             port: remote_port,
                             last_seen,
+                            public_key,
+                            crypto_version,
                         });
                     }
                 }
@@ -523,7 +570,7 @@ mod tests {
         // 测试端口检查逻辑（实际端口可用性取决于系统）
         let available = MdnsService::is_port_available(9527);
         // 只验证函数能正常返回，不验证具体结果
-        assert!(available || !available);
+        let _ = available;
     }
 
     #[test]
@@ -546,6 +593,8 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
+            public_key: None,
+            crypto_version: "1".to_string(),
         };
 
         // 新设备应该在线
@@ -557,11 +606,37 @@ mod tests {
     }
 
     #[test]
+    fn test_device_info_is_compatible() {
+        // 兼容设备：crypto_version 与本地一致
+        let compatible = DeviceInfo {
+            id: "compat-device".to_string(),
+            name: "Compatible Device".to_string(),
+            addr: "192.168.1.101".parse().unwrap(),
+            port: 9527,
+            last_seen: 0,
+            public_key: None,
+            crypto_version: "1".to_string(),
+        };
+        assert!(compatible.is_compatible());
+
+        // 不兼容设备：crypto_version 与本地不一致（旧版本未加密）
+        let incompatible = DeviceInfo {
+            id: "incompat-device".to_string(),
+            name: "Incompatible Device".to_string(),
+            addr: "192.168.1.102".parse().unwrap(),
+            port: 9527,
+            last_seen: 0,
+            public_key: None,
+            crypto_version: "0".to_string(),
+        };
+        assert!(!incompatible.is_compatible());
+    }
+
     fn test_mdns_service_creation() {
         let device_id = Uuid::new_v4().to_string();
         let device_name = "Test Device".to_string();
 
-        let result = MdnsService::new(device_id.clone(), device_name.clone(), 9527);
+        let result = MdnsService::new(device_id.clone(), device_name.clone(), 9527, None, CRYPTO_VERSION.to_string());
 
         // 根据系统 mDNS 可用性判断结果
         match result {
@@ -583,7 +658,7 @@ mod tests {
         let device_id = Uuid::new_v4().to_string();
         let device_name = "Test Device".to_string();
 
-        if let Ok(service) = MdnsService::new(device_id.clone(), device_name.clone(), 9528) {
+        if let Ok(service) = MdnsService::new(device_id.clone(), device_name.clone(), 9528, None, CRYPTO_VERSION.to_string()) {
             // 初始设备列表为空
             assert_eq!(service.get_devices().len(), 0);
 
@@ -601,6 +676,8 @@ mod tests {
                             .duration_since(UNIX_EPOCH)
                             .unwrap()
                             .as_secs(),
+                        public_key: None,
+                        crypto_version: "1".to_string(),
                     },
                 );
             }
@@ -621,11 +698,36 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_local_ipv4() {
+        let ip = MdnsService::detect_local_ipv4();
+        match ip {
+            Some(addr) => {
+                // 验证返回的是有效 IPv4 地址
+                assert!(!addr.is_empty(), "IP 地址不应为空");
+                assert!(!addr.starts_with("127."), "不应返回回环地址: {}", addr);
+
+                // 验证是私有地址或 CGNAT 地址
+                let valid = addr.starts_with("10.")
+                    || addr.starts_with("192.168.")
+                    || addr.starts_with("172.1")
+                    || addr.starts_with("172.2")
+                    || addr.starts_with("172.3")
+                    || addr.starts_with("100.");
+                assert!(valid, "IP {} 不是私有地址", addr);
+            }
+            None => {
+                // 没有网络接口时允许失败
+                println!("detect_local_ipv4 返回 None（无网络接口）");
+            }
+        }
+    }
+
+    #[test]
     fn test_service_registration() {
         let device_id = Uuid::new_v4().to_string();
         let device_name = "Test Device".to_string();
 
-        if let Ok(service) = MdnsService::new(device_id, device_name, 9529) {
+        if let Ok(service) = MdnsService::new(device_id, device_name, 9529, None, CRYPTO_VERSION.to_string()) {
             // 尝试注册服务（可能因系统限制失败）
             let result = service.register();
 

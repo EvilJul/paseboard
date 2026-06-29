@@ -8,7 +8,9 @@
 // - 并行启动优化（mDNS、WebSocket、Storage 并行初始化）
 
 use crate::config::AppConfig;
-use crate::network::mdns::{MdnsService, DeviceInfo};
+use crate::network::crypto::CryptoTransport;
+use crate::network::identity::IdentityManager;
+use crate::network::mdns::{MdnsService, DeviceInfo, CRYPTO_VERSION};
 use crate::network::websocket_server::WebSocketServer;
 use crate::network::websocket_client::WebSocketClient;
 use crate::network::message::Message;
@@ -31,6 +33,7 @@ pub struct DeviceSnapshot {
     pub addr: String,
     pub port: u16,
     pub last_seen: u64,
+    pub is_compatible: bool,
 }
 
 impl DeviceSnapshot {
@@ -46,12 +49,14 @@ impl DeviceSnapshot {
 
 impl From<DeviceInfo> for DeviceSnapshot {
     fn from(d: DeviceInfo) -> Self {
+        let is_compatible = d.is_compatible();
         Self {
             id: d.id,
             name: d.name,
             addr: d.addr.to_string(),
             port: d.port,
             last_seen: d.last_seen,
+            is_compatible,
         }
     }
 }
@@ -74,6 +79,10 @@ pub struct StorageQuery {
 pub struct App {
     /// 应用配置
     config: AppConfig,
+    /// 设备身份管理器
+    identity: Arc<IdentityManager>,
+    /// 加密传输层
+    crypto: Arc<CryptoTransport>,
     /// mDNS 服务
     mdns: Arc<MdnsService>,
     /// WebSocket 服务端
@@ -100,6 +109,8 @@ pub struct App {
 
 /// 应用对外暴露给 IPC 命令使用的句柄（轻量、Send + Sync）
 pub struct IpcHandles {
+    /// 设备身份管理器
+    pub identity: Arc<IdentityManager>,
     /// mDNS 服务（用于查询发现的设备列表）
     pub mdns: Arc<MdnsService>,
     /// 历史存储查询通道
@@ -122,25 +133,35 @@ impl App {
     pub async fn new(config: AppConfig, app_handle: tauri::AppHandle) -> anyhow::Result<Self> {
         info!("开始初始化应用...");
 
+        // 初始化设备身份（在并行初始化之前，因为 mdns 需要公钥）
+        let identity = IdentityManager::new(config.identity_path())?;
+        let identity = Arc::new(identity);
+        let device_id = identity.device_id().to_string();
+
+        // 初始化加密传输层
+        let crypto = Arc::new(CryptoTransport::new(Arc::clone(&identity)));
+
         // 创建共享的入站连接设备 ID 集合
         let server_connected_device_ids: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
 
-        // 并行初始化三个独立模块：mDNS、WebSocket Server、Storage
+        // 并行初始化三个独立模块：mDNS（带公钥）、WebSocket Server、Storage
         let mdns_handle = {
-            let device_id = config.device_id.clone();
+            let device_id = device_id.clone();
             let device_name = config.device_name.clone();
             let port = config.port;
+            let public_key_b64 = Some(identity.public_key_base64());
             tokio::spawn(async move {
-                MdnsService::new(device_id, device_name, port)
+                MdnsService::new(device_id, device_name, port, public_key_b64, CRYPTO_VERSION.to_string())
             })
         };
 
         let ws_server_handle = {
             let bind_addr = format!("0.0.0.0:{}", config.port);
-            let device_id = config.device_id.clone();
+            let device_id = device_id.clone();
             let connected_ids = Arc::clone(&server_connected_device_ids);
+            let crypto = Arc::clone(&crypto);
             tokio::spawn(async move {
-                WebSocketServer::new(bind_addr, device_id, connected_ids)
+                WebSocketServer::new(bind_addr, device_id, connected_ids, crypto)
             })
         };
 
@@ -186,6 +207,8 @@ impl App {
 
         Ok(Self {
             config,
+            identity,
+            crypto,
             mdns: Arc::new(mdns),
             ws_server: Arc::new(ws_server),
             ws_server_rx: Arc::new(RwLock::new(ws_server_rx)),
@@ -233,6 +256,8 @@ impl App {
         // 提取需要移动的字段
         let Self {
             config,
+            identity: _,
+            crypto,
             mdns,
             ws_server,
             ws_server_rx,
@@ -274,6 +299,7 @@ impl App {
         {
             let mdns_for_discovery = Arc::clone(&mdns);
             let config_for_discovery = config.clone();
+            let crypto_for_discovery = Arc::clone(&crypto);
             let clients_for_discovery = Arc::clone(&clients);
             let server_ids_for_discovery = Arc::clone(&server_connected_device_ids);
             let dedup_service_for_discovery = Arc::clone(&dedup_service);
@@ -284,6 +310,7 @@ impl App {
                 Self::handle_device_discovery_task(
                     mdns_for_discovery,
                     config_for_discovery,
+                    crypto_for_discovery,
                     clients_for_discovery,
                     server_ids_for_discovery,
                     dedup_service_for_discovery,
@@ -331,6 +358,7 @@ impl App {
     async fn handle_device_discovery_task(
         mdns: Arc<MdnsService>,
         config: AppConfig,
+        crypto: Arc<CryptoTransport>,
         clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
         server_connected_ids: Arc<RwLock<HashSet<String>>>,
         dedup_service: Arc<DeduplicationService>,
@@ -371,11 +399,18 @@ impl App {
                     }
                 }
 
+                // 跳过不兼容的设备（加密版本不匹配）
+                if !device.is_compatible() {
+                    warn!("设备 {} 加密版本不兼容（本地: v{}, 远程: v{}），跳过连接",
+                        device.name, CRYPTO_VERSION, device.crypto_version);
+                    continue;
+                }
                 // 尝试连接到新发现的设备
                 info!("发现新设备: {} ({}:{})", device.name, device.addr, device.port);
                 Self::connect_to_device(
                     device,
                     config.clone(),
+                    Arc::clone(&crypto),
                     Arc::clone(&clients),
                     Arc::clone(&dedup_service),
                     Arc::clone(&clipboard_writer),
@@ -393,6 +428,7 @@ impl App {
     async fn connect_to_device(
         device: DeviceInfo,
         config: AppConfig,
+        crypto: Arc<CryptoTransport>,
         clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
         dedup_service: Arc<DeduplicationService>,
         clipboard_writer: Arc<ClipboardWriter>,
@@ -413,7 +449,8 @@ impl App {
         info!("尝试连接到设备 {}: {}", device.name, server_url);
 
         // 创建 WebSocket 客户端
-        let (client, mut client_rx) = WebSocketClient::new(server_url.clone(), device_id.clone());
+        let (client, mut client_rx) =
+            WebSocketClient::new(server_url.clone(), device_id.clone(), crypto);
         let client = Arc::new(client);
 
         // 注册客户端
@@ -616,6 +653,7 @@ impl App {
     /// 构造 IPC 命令需要的句柄（在 run() 之前调用，提取共享引用）
     pub fn ipc_handles(&self) -> IpcHandles {
         IpcHandles {
+            identity: Arc::clone(&self.identity),
             mdns: Arc::clone(&self.mdns),
             storage_query_tx: self.storage_query_tx.clone(),
             clients: Arc::clone(&self.clients),
