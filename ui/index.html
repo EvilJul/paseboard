@@ -821,15 +821,15 @@
         }
 
         // 加载历史记录（带去重：仅数据变化时重渲染，避免闪烁）
-        let _lastHistoryHash = '';
+        let _lastHistoryHash = null;
         async function loadHistory() {
             const tbody = document.getElementById('history-tbody');
 
             try {
                 const history = await invoke('get_history');
 
-                // 用 id 列表 + 总数生成简易指纹，避免每 5 秒重渲染
-                const hash = history.map(h => h.id).join(',');
+                // 用 id 列表生成指纹，避免每 5 秒重渲染
+                const hash = history.length === 0 ? '__empty__' : history.map(h => h.id).join(',');
                 if (hash === _lastHistoryHash) return;
                 _lastHistoryHash = hash;
 
@@ -963,7 +963,7 @@
             try {
                 await invoke('clear_history');
                 showToast('历史记录已清空');
-                _lastHistoryHash = ''; // 重置缓存，强制刷新
+                _lastHistoryHash = null; // 重置缓存，强制刷新
                 loadHistory();
             } catch (error) {
                 console.error('清空历史记录失败:', error);
