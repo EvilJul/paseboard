@@ -1427,9 +1427,9 @@
                 hidePairingModal();
             });
 
-            // 监听后端配对请求事件
-            window.__TAURI_INTERNALS__.addEventHandler('pairing-request', (event) => {
-                const { device_id, device_name } = event;
+            // 监听后端配对请求事件（Tauri v2 全局事件 API）
+            window.__TAURI__.event.listen('pairing-request', (event) => {
+                const { device_id, device_name } = event.payload;
                 showPairingModal(device_id, device_name);
             });
 
