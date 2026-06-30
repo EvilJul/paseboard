@@ -55,6 +55,13 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
+      - name: Install Windows OpenSSL
+        if: matrix.platform == 'windows-latest'
+        run: |
+          choco install openssl -y
+          echo "OPENSSL_DIR=C:\Program Files\OpenSSL" >> $env:GITHUB_ENV
+          echo "OPENSSL_NO_VENDOR=1" >> $env:GITHUB_ENV
+
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
