@@ -2,15 +2,10 @@ name: Build & Release
 
 on:
   push:
+    branches: [main]
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      publish:
-        description: '是否创建 GitHub Release'
-        required: false
-        default: 'false'
-        type: boolean
 
 permissions:
   contents: write
@@ -55,6 +50,13 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
+      - name: Cache vcpkg packages
+        if: matrix.platform == 'windows-latest'
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-openssl-x64-windows-static-v1
+
       - name: Install Windows OpenSSL
         if: matrix.platform == 'windows-latest'
         run: |
@@ -76,7 +78,8 @@ jobs:
             avahi-daemon \
             libgtk-3-dev
 
-      - name: Build
+      - name: Build (release)
+        if: startsWith(github.ref, 'refs/tags/')
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -92,9 +95,7 @@ jobs:
 
             | 平台 | 文件 | 说明 |
             |------|------|------|
-            | macOS (Intel) | `PaseBoard.app` (x86_64) | Intel Mac |
-            | macOS (Apple Silicon) | `PaseBoard.app` (aarch64) | M1/M2/M3/M4 Mac |
-            | macOS (Universal) | `PaseBoard.app` (universal) | 同时支持 Intel 和 Apple Silicon |
+            | macOS (Universal) | `PaseBoard.app` | Intel + Apple Silicon |
             | Windows | `PaseBoard_x64.msi` | Windows 10/11 |
             | Linux (Debian/Ubuntu) | `paseboard_amd64.deb` | 需要 `avahi-daemon` |
             | Linux (Fedora/RHEL) | `paseboard.x86_64.rpm` | 需要 `avahi-daemon` |
@@ -129,4 +130,10 @@ jobs:
             ```
           releaseDraft: true
           prerelease: false
+          args: --target ${{ matrix.target }}
+
+      - name: Build (CI)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: tauri-apps/tauri-action@v0
+        with:
           args: --target ${{ matrix.target }}
