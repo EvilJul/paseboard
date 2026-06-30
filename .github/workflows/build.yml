@@ -1,0 +1,122 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: '是否创建 GitHub Release'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: universal-apple-darwin
+            label: macOS
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: Linux
+
+    runs-on: ${{ matrix.platform }}
+    name: Build (${{ matrix.label }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libavahi-compat-libdnssd-dev \
+            avahi-daemon \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - name: Build
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'PaseBoard ${{ github.ref_name }}'
+          releaseBody: |
+            ## PaseBoard ${{ github.ref_name }}
+
+            ### 下载
+
+            | 平台 | 文件 | 说明 |
+            |------|------|------|
+            | macOS (Intel) | `PaseBoard.app` (x86_64) | Intel Mac |
+            | macOS (Apple Silicon) | `PaseBoard.app` (aarch64) | M1/M2/M3/M4 Mac |
+            | macOS (Universal) | `PaseBoard.app` (universal) | 同时支持 Intel 和 Apple Silicon |
+            | Windows | `PaseBoard_x64.msi` | Windows 10/11 |
+            | Linux (Debian/Ubuntu) | `paseboard_amd64.deb` | 需要 `avahi-daemon` |
+            | Linux (Fedora/RHEL) | `paseboard.x86_64.rpm` | 需要 `avahi-daemon` |
+            | Linux (通用) | `paseboard_amd64.AppImage` | 无需安装 |
+
+            ### ⚠️ macOS 安全提示
+
+            PaseBoard 未经过 Apple 公证（Notarization）。首次打开时 macOS 可能会提示"无法打开，因为无法验证开发者"。
+
+            **解决方法：**
+            1. 右键点击 `PaseBoard.app` → 选择"打开"
+            2. 在弹出的对话框中点击"打开"
+            3. 或者：前往 **系统设置 → 隐私与安全性**，在"安全"部分点击"仍要打开"
+
+            如果上述方法无效，可以在终端执行：
+            ```
+            xattr -cr /Applications/PaseBoard.app
+            ```
+
+            ### Linux 依赖
+
+            Debian/Ubuntu:
+            ```
+            sudo apt install avahi-daemon
+            sudo systemctl enable --now avahi-daemon
+            ```
+
+            Fedora/RHEL:
+            ```
+            sudo dnf install avahi
+            sudo systemctl enable --now avahi-daemon
+            ```
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
