@@ -28,12 +28,15 @@ jobs:
           - platform: macos-latest
             target: universal-apple-darwin
             label: macOS
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows
+            rust_targets: ''
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: Linux
+            rust_targets: ''
 
     runs-on: ${{ matrix.platform }}
     name: Build (${{ matrix.label }})
@@ -45,7 +48,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.rust_targets }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -58,13 +61,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
             libavahi-compat-libdnssd-dev \
             avahi-daemon \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev
+            libgtk-3-dev
 
       - name: Build
         uses: tauri-apps/tauri-action@v0
