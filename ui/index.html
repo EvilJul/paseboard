@@ -476,46 +476,115 @@
             font-size: 10px;
         }
 
-        .settings-wrap {
-            position: relative;
+        /* 设置弹窗遮罩层 */
+        .settings-modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.3);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9000;
         }
 
-        .settings-dropdown {
-            position: absolute;
-            bottom: 100%;
-            right: 0;
-            margin-bottom: 4px;
-            background: #ffffff;
-            border: 1px solid #e7e1d7;
-            border-radius: 8px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
-            min-width: 180px;
-            z-index: 100;
-            padding: 8px;
+        /* 设置弹窗内容 */
+        .settings-modal-content {
+            background: #1e1e2e;
+            border-radius: 12px;
+            padding: 24px;
+            width: 320px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            border: 1px solid #313244;
+            color: #cdd6f4;
+            font-size: 14px;
         }
 
-        .settings-item {
-            padding: 8px 4px;
-            font-size: 13px;
-            color: #1f2421;
-        }
-
-        .settings-item:not(:last-child) {
-            border-bottom: 1px solid #f0ece4;
-        }
-
-        .settings-toggle {
+        .settings-modal-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            cursor: pointer;
+            margin-bottom: 20px;
         }
 
-        .settings-toggle input[type="checkbox"] {
-            accent-color: #c4612f;
+        .settings-modal-header h3 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+            color: #cdd6f4;
+        }
+
+        .settings-modal-close {
+            background: none;
+            border: none;
+            color: #6c7086;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 4px;
+            transition: all 0.15s;
+        }
+
+        .settings-modal-close:hover {
+            background: #313244;
+            color: #cdd6f4;
+        }
+
+        .settings-group {
+            margin-bottom: 16px;
+        }
+
+        .settings-group-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #a6adc8;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #45475a;
+            margin-bottom: 8px;
+        }
+
+        .settings-group-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 0;
+        }
+
+        .settings-group-item label {
+            cursor: pointer;
+            color: #cdd6f4;
+            font-size: 14px;
+            flex: 1;
+        }
+
+        .settings-group-item input[type="checkbox"] {
+            accent-color: #89b4fa;
             width: 16px;
             height: 16px;
             cursor: pointer;
+        }
+
+        .settings-modal-version {
+            text-align: right;
+            font-size: 12px;
+            color: #6c7086;
+            margin-top: 16px;
+            padding-top: 12px;
+            border-top: 1px solid #313244;
+        }
+
+        /* 列显隐：通过 data-col 属性选择器 */
+        table.hide-devices-status [data-col="status"],
+        table.hide-devices-address [data-col="address"],
+        table.hide-history-source [data-col="source"],
+        table.hide-history-time [data-col="time"] {
+            display: none;
         }
 
         /* 图片预览 */
@@ -537,12 +606,6 @@
 
         .image-preview img:hover {
             transform: scale(1.05);
-        }
-
-        .settings-version {
-            color: #999;
-            font-size: 11px;
-            text-align: center;
         }
 
         /* 配对审批弹窗 */
@@ -593,8 +656,8 @@
                         <thead>
                             <tr>
                                 <th>设备名称</th>
-                                <th>状态</th>
-                                <th>IP + 端口</th>
+                                <th data-col="status">状态</th>
+                                <th data-col="address">IP + 端口</th>
                             </tr>
                         </thead>
                         <tbody id="devices-tbody">
@@ -621,8 +684,8 @@
                         <thead>
                             <tr>
                                 <th>内容预览</th>
-                                <th>来源设备</th>
-                                <th>时间 · 大小</th>
+                                <th data-col="source">来源设备</th>
+                                <th data-col="time">时间 · 大小</th>
                             </tr>
                         </thead>
                         <tbody id="history-tbody">
@@ -664,19 +727,55 @@
             <span id="status-text">就绪</span>
             <div class="statusbar-actions">
                 <button id="console-toggle-btn" class="devtools-btn" style="display:none" title="控制台">📋 控制台</button>
-                <div class="settings-wrap">
-                    <button id="settings-btn" class="devtools-btn" title="设置">⚙️</button>
-                    <div id="settings-dropdown" class="settings-dropdown" style="display:none">
-                        <div class="settings-item">
-                            <label class="settings-toggle">
-                                <span>开发者模式</span>
-                                <input type="checkbox" id="dev-mode-toggle">
-                            </label>
-                        </div>
-                        <div class="settings-item settings-version">PaseBoard v0.1.1</div>
-                    </div>
+                <button id="settings-btn" class="devtools-btn" title="设置">⚙️</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 设置弹窗 -->
+    <div id="settings-modal" class="settings-modal-overlay">
+        <div class="settings-modal-content">
+            <div class="settings-modal-header">
+                <h3>设置</h3>
+                <button id="settings-modal-close" class="settings-modal-close">&times;</button>
+            </div>
+
+            <!-- 设备列表列显隐 -->
+            <div class="settings-group">
+                <div class="settings-group-title">设备列表</div>
+                <div class="settings-group-item">
+                    <label for="col-devices-status">状态</label>
+                    <input type="checkbox" id="col-devices-status" data-table="devices" data-col="status" checked>
+                </div>
+                <div class="settings-group-item">
+                    <label for="col-devices-address">IP + 端口</label>
+                    <input type="checkbox" id="col-devices-address" data-table="devices" data-col="address" checked>
                 </div>
             </div>
+
+            <!-- 历史记录列显隐 -->
+            <div class="settings-group">
+                <div class="settings-group-title">历史记录</div>
+                <div class="settings-group-item">
+                    <label for="col-history-source">来源设备</label>
+                    <input type="checkbox" id="col-history-source" data-table="history" data-col="source" checked>
+                </div>
+                <div class="settings-group-item">
+                    <label for="col-history-time">时间 · 大小</label>
+                    <input type="checkbox" id="col-history-time" data-table="history" data-col="time" checked>
+                </div>
+            </div>
+
+            <!-- 其他设置 -->
+            <div class="settings-group">
+                <div class="settings-group-title">其他</div>
+                <div class="settings-group-item">
+                    <label for="modal-dev-mode">开发者模式</label>
+                    <input type="checkbox" id="modal-dev-mode">
+                </div>
+            </div>
+
+            <div class="settings-modal-version">PaseBoard v0.1.1</div>
         </div>
     </div>
 
@@ -798,10 +897,10 @@
                     return `
                     <tr>
                         <td>${device.name}</td>
-                        <td>
+                        <td data-col="status">
                             <span class="status-dot ${device.is_connected ? 'online' : 'offline'}"></span>
                         </td>
-                        <td>${device.addr}:${device.port}</td>
+                        <td data-col="address">${device.addr}:${device.port}</td>
                     </tr>
                 `}).join('');
             } catch (error) {
@@ -861,8 +960,8 @@
                                         <img src="data:image/png;base64,${item.content}" alt="剪贴板图片" loading="lazy" />
                                     </div>
                                 </td>
-                                <td>${escapeHtml(item.device_name)}</td>
-                                <td class="meta-col">
+                                <td data-col="source">${escapeHtml(item.device_name)}</td>
+                                <td class="meta-col" data-col="time">
                                     <span class="badge">图片</span>
                                     <span class="relative-time">${relativeTime}</span>
                                     <span class="meta-sep">·</span>
@@ -879,8 +978,8 @@
                                 <td>
                                     <div class="content-preview" data-full="${escapeAttr(item.content)}">${escapeHtml(preview)}</div>
                                 </td>
-                                <td>${escapeHtml(item.device_name)}</td>
-                                <td class="meta-col">
+                                <td data-col="source">${escapeHtml(item.device_name)}</td>
+                                <td class="meta-col" data-col="time">
                                     ${isLarge ? '<span class="badge">超大</span> ' : ''}
                                     <span class="relative-time">${relativeTime}</span>
                                     <span class="meta-sep">·</span>
@@ -994,15 +1093,76 @@
             stopPolling();
         }
 
-        // ===== 设置面板 =====
+        // ===== 设置弹窗 =====
         (function initSettings() {
             const settingsBtn = document.getElementById('settings-btn');
-            const dropdown = document.getElementById('settings-dropdown');
-            const devToggle = document.getElementById('dev-mode-toggle');
+            const modal = document.getElementById('settings-modal');
+            const closeBtn = document.getElementById('settings-modal-close');
             const consoleBtn = document.getElementById('console-toggle-btn');
+            const modalDevMode = document.getElementById('modal-dev-mode');
 
+            // 从 localStorage 读取列显隐配置
+            function loadColumnVisibility() {
+                try {
+                    const raw = localStorage.getItem('paseboard:columnVisibility');
+                    return raw ? JSON.parse(raw) : { devices: {}, history: {} };
+                } catch {
+                    return { devices: {}, history: {} };
+                }
+            }
+
+            // 应用列显隐：切换 table 的 CSS class
+            function applyColumnVisibility(config) {
+                const devicesTable = document.querySelector('#devices table');
+                const historyTable = document.querySelector('#history table');
+
+                // 设备列表
+                if (devicesTable) {
+                    devicesTable.classList.toggle('hide-devices-status', config.devices.status === false);
+                    devicesTable.classList.toggle('hide-devices-address', config.devices.address === false);
+                }
+
+                // 历史记录
+                if (historyTable) {
+                    historyTable.classList.toggle('hide-history-source', config.history.source === false);
+                    historyTable.classList.toggle('hide-history-time', config.history.time === false);
+                }
+            }
+
+            // 将配置写入 localStorage 并重新应用
+            function saveAndApplyColumnVisibility(config) {
+                try {
+                    localStorage.setItem('paseboard:columnVisibility', JSON.stringify(config));
+                } catch {
+                    // localStorage 写入失败时静默忽略
+                }
+                applyColumnVisibility(config);
+            }
+
+            // 打开设置弹窗
+            function openSettingsModal() {
+                const config = loadColumnVisibility();
+
+                // 同步 checkbox 状态
+                document.getElementById('col-devices-status').checked = config.devices.status !== false;
+                document.getElementById('col-devices-address').checked = config.devices.address !== false;
+                document.getElementById('col-history-source').checked = config.history.source !== false;
+                document.getElementById('col-history-time').checked = config.history.time !== false;
+
+                // 同步开发者模式 checkbox
+                modalDevMode.checked = localStorage.getItem('paseboard:devMode') === 'true';
+
+                modal.style.display = 'flex';
+            }
+
+            // 关闭设置弹窗
+            function closeSettingsModal() {
+                modal.style.display = 'none';
+            }
+
+            // 开发者模式 UI 更新
             function updateDevModeUI(enabled) {
-                devToggle.checked = enabled;
+                modalDevMode.checked = enabled;
                 consoleBtn.style.display = enabled ? 'inline-block' : 'none';
                 localStorage.setItem('paseboard:devMode', enabled ? 'true' : 'false');
                 if (enabled) {
@@ -1012,30 +1172,52 @@
                 }
             }
 
-            // 加载已保存的设置
-            const saved = localStorage.getItem('paseboard:devMode') === 'true';
-            updateDevModeUI(saved);
+            // 加载已保存的开发者模式设置
+            const savedDevMode = localStorage.getItem('paseboard:devMode') === 'true';
+            updateDevModeUI(savedDevMode);
 
-            settingsBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const isVisible = dropdown.style.display === 'block';
-                dropdown.style.display = isVisible ? 'none' : 'block';
+            // 应用已保存的列显隐配置
+            const savedConfig = loadColumnVisibility();
+            applyColumnVisibility(savedConfig);
+
+            // ⚙️ 按钮打开弹窗
+            settingsBtn.addEventListener('click', openSettingsModal);
+
+            // ✕ 按钮关闭弹窗
+            closeBtn.addEventListener('click', closeSettingsModal);
+
+            // 点击遮罩层关闭弹窗
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    closeSettingsModal();
+                }
             });
 
-            // 点击外部关闭下拉
-            document.addEventListener('click', () => {
-                dropdown.style.display = 'none';
+            // 列显隐 checkbox change 事件
+            document.querySelectorAll('.settings-group-item input[data-table]').forEach(checkbox => {
+                checkbox.addEventListener('change', () => {
+                    const table = checkbox.dataset.table;
+                    const col = checkbox.dataset.col;
+                    const visible = checkbox.checked;
+
+                    const config = loadColumnVisibility();
+                    if (!config[table]) config[table] = {};
+                    config[table][col] = visible;
+                    saveAndApplyColumnVisibility(config);
+                });
             });
 
-            devToggle.addEventListener('change', () => {
-                updateDevModeUI(devToggle.checked);
+            // 开发者模式 checkbox change 事件
+            modalDevMode.addEventListener('change', () => {
+                updateDevModeUI(modalDevMode.checked);
             });
 
             // Ctrl+Shift+D 快捷键切换开发者模式
             document.addEventListener('keydown', (e) => {
                 if (e.ctrlKey && e.shiftKey && e.key === 'D') {
                     e.preventDefault();
-                    updateDevModeUI(!devToggle.checked);
+                    const currentMode = localStorage.getItem('paseboard:devMode') === 'true';
+                    updateDevModeUI(!currentMode);
                 }
             });
         })();
