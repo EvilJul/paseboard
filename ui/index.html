@@ -863,6 +863,11 @@
             return content.substring(0, maxLength) + '...';
         }
 
+        // 首次加载完成标志：启动期后端未就绪时不显示 ❌，避免错误图标闪烁
+        let _initialLoadDone = false;
+        // 启动期快速重试计数：前 3 次 500ms 探测后端就绪，之后回落到 5000ms 常规轮询
+        let _retryCount = 0;
+
         // 加载设备列表（带去重）
         let _lastDevicesHash = '';
         async function loadDevices() {
@@ -871,6 +876,10 @@
 
             try {
                 const devices = await invoke('get_devices');
+
+                // 首次成功：标记已完成、重置重试计数
+                _initialLoadDone = true;
+                _retryCount = 0;
 
                 // 用设备 id + 连接状态生成指纹
                 const hash = devices.map(d => `${d.id}:${d.is_connected}`).join(',');
@@ -905,17 +914,22 @@
                 `}).join('');
             } catch (error) {
                 console.error('加载设备列表失败:', error);
-                tbody.innerHTML = `
-                    <tr>
-                        <td colspan="3">
-                            <div class="empty-state">
-                                <div class="empty-state-icon">❌</div>
-                                <div class="empty-state-title">加载失败</div>
-                                <div class="empty-state-desc">${error}</div>
-                            </div>
-                        </td>
-                    </tr>
-                `;
+                if (_initialLoadDone) {
+                    // 后端已成功就绪过，此时失败才是真错误，显示 ❌
+                    tbody.innerHTML = `
+                        <tr>
+                            <td colspan="3">
+                                <div class="empty-state">
+                                    <div class="empty-state-icon">❌</div>
+                                    <div class="empty-state-title">加载失败</div>
+                                    <div class="empty-state-desc">${error}</div>
+                                </div>
+                            </td>
+                        </tr>
+                    `;
+                }
+                // 启动期（尚无一次成功）：保留 tbody 原有 spinner，不显示 ❌，
+                // 不在此处置 _initialLoadDone，等首次成功再翻转，避免启动窗口内 ❌ 闪烁
             }
         }
 
@@ -926,6 +940,10 @@
 
             try {
                 const history = await invoke('get_history');
+
+                // 首次成功：标记已完成、重置重试计数
+                _initialLoadDone = true;
+                _retryCount = 0;
 
                 // 用 id 列表生成指纹，避免每 5 秒重渲染
                 const hash = history.length === 0 ? '__empty__' : history.map(h => h.id).join(',');
@@ -991,17 +1009,21 @@
                 }).join('');
             } catch (error) {
                 console.error('加载历史记录失败:', error);
-                tbody.innerHTML = `
-                    <tr>
-                        <td colspan="3">
-                            <div class="empty-state">
-                                <div class="empty-state-icon">❌</div>
-                                <div class="empty-state-title">加载失败</div>
-                                <div class="empty-state-desc">${error}</div>
-                            </div>
-                        </td>
-                    </tr>
-                `;
+                if (_initialLoadDone) {
+                    // 后端已成功就绪过，此时失败才是真错误，显示 ❌
+                    tbody.innerHTML = `
+                        <tr>
+                            <td colspan="3">
+                                <div class="empty-state">
+                                    <div class="empty-state-icon">❌</div>
+                                    <div class="empty-state-title">加载失败</div>
+                                    <div class="empty-state-desc">${error}</div>
+                                </div>
+                            </td>
+                        </tr>
+                    `;
+                }
+                // 启动期（尚无一次成功）：保留 tbody 原有 spinner，不显示 ❌
             }
         }
 
@@ -1047,15 +1069,29 @@
                 .replace(/"/g, '&quot;');
         }
 
-        // 定时刷新数据
-        setInterval(() => {
+        // 定时刷新数据：启动期用 500ms 快速探测后端就绪，就绪后回落到 5000ms 常规轮询
+        let _pollInterval = null;
+
+        function refreshTick() {
             const activeTab = document.querySelector('.tab-btn.active').getAttribute('data-tab');
             if (activeTab === 'devices') {
                 loadDevices();
             } else if (activeTab === 'history') {
                 loadHistory();
             }
-        }, 5000);
+
+            // 启动期：累加重试次数，达到阈值后切换到常规轮询周期
+            if (!_initialLoadDone && _retryCount < 3) {
+                _retryCount++;
+                if (_retryCount >= 3) startAutoRefresh();
+            }
+        }
+
+        function startAutoRefresh() {
+            if (_pollInterval) clearInterval(_pollInterval);
+            const period = (!_initialLoadDone && _retryCount < 3) ? 500 : 5000;
+            _pollInterval = setInterval(refreshTick, period);
+        }
 
         // 清空历史记录
         document.getElementById('clear-history-btn').addEventListener('click', async () => {
@@ -1373,6 +1409,7 @@
 
         // 初始加载
         loadDevices();
+        startAutoRefresh();
     </script>
 
     <!-- 配对审批弹窗 -->

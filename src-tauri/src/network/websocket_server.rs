@@ -351,6 +351,7 @@ impl WebSocketServer {
         let clients = Arc::clone(&self.clients);
         let device_id = self.device_id.clone();
         let crypto = Arc::clone(&self.crypto);
+        let connected_device_ids = Arc::clone(&self.connected_device_ids);
 
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
@@ -368,7 +369,9 @@ impl WebSocketServer {
                             "客户端心跳超时 ({}): {} 秒未响应",
                             addr, HEARTBEAT_TIMEOUT_SECS
                         );
-                        disconnected.push(*addr);
+                        // 同时收集设备 ID，超时清理时一并从 connected_device_ids 移除，
+                        // 避免泄漏条目导致重连 ticker 误判"已连接"而永久无法恢复
+                        disconnected.push((*addr, client.device_id.clone()));
                     } else {
                         // 发送心跳（优先加密）
                         let heartbeat = Message::new_heartbeat(device_id.clone());
@@ -382,10 +385,16 @@ impl WebSocketServer {
                     }
                 }
 
-                // 移除超时客户端
-                for addr in disconnected {
+                // 移除超时客户端（对齐正常断开路径：clients 与 connected_device_ids 同步删除）
+                for (addr, timed_out_device_id) in disconnected {
                     clients.remove(&addr);
-                    info!("已断开超时客户端: {}", addr);
+                    if !timed_out_device_id.is_empty() {
+                        connected_device_ids.write().await.remove(&timed_out_device_id);
+                    }
+                    info!(
+                        "已断开超时客户端: {} (设备: {})",
+                        addr, timed_out_device_id
+                    );
                 }
             }
         });
