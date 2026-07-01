@@ -132,8 +132,8 @@ pub struct App {
     identity: Arc<IdentityManager>,
     /// 加密传输层
     crypto: Arc<CryptoTransport>,
-    /// mDNS 服务
-    mdns: Arc<MdnsService>,
+    /// mDNS 服务（使用 RwLock 以支持运行时更新设备名称）
+    mdns: Arc<RwLock<MdnsService>>,
     /// WebSocket 服务端
     ws_server: Arc<WebSocketServer>,
     /// WebSocket 服务端消息接收通道
@@ -166,10 +166,12 @@ pub struct App {
 
 /// 应用对外暴露给 IPC 命令使用的句柄（轻量、Send + Sync）
 pub struct IpcHandles {
+    /// 应用配置
+    pub config: Arc<RwLock<AppConfig>>,
     /// 设备身份管理器
     pub identity: Arc<IdentityManager>,
-    /// mDNS 服务（用于查询发现的设备列表）
-    pub mdns: Arc<MdnsService>,
+    /// mDNS 服务（用于查询发现的设备列表和广播设备名称）
+    pub mdns: Arc<RwLock<MdnsService>>,
     /// 历史存储查询通道
     pub storage_query_tx: mpsc::UnboundedSender<StorageQuery>,
     /// 历史存储清空通道
@@ -180,6 +182,34 @@ pub struct IpcHandles {
     pub clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
     /// 已连接的入站远程设备 ID 集合
     pub server_connected_device_ids: Arc<RwLock<HashSet<String>>>,
+}
+
+impl IpcHandles {
+    /// 更新自定义设备名称并触发 mDNS 广播
+    pub async fn set_custom_device_name(&self, name: Option<String>) -> anyhow::Result<()> {
+        log::info!("开始更新设备名称: {:?}", name);
+
+        // 1. 更新配置文件
+        {
+            let mut config = self.config.write().await;
+            config.set_custom_device_name(name.clone())?;
+            log::info!("配置文件已更新");
+        }
+
+        // 2. 如果提供了新名称，触发 mDNS 重新广播
+        if let Some(new_name) = name {
+            log::info!("触发 mDNS 广播新名称: {}", new_name);
+            let mut mdns = self.mdns.write().await;
+            mdns.update_device_name(new_name)
+                .map_err(|e| {
+                    log::error!("mDNS 广播更新失败: {}", e);
+                    anyhow::anyhow!("mDNS 广播更新失败: {}", e)
+                })?;
+            log::info!("✓ mDNS 广播完成");
+        }
+
+        Ok(())
+    }
 }
 
 impl App {
@@ -287,7 +317,7 @@ impl App {
             config,
             identity,
             crypto,
-            mdns: Arc::new(mdns),
+            mdns: Arc::new(RwLock::new(mdns)),
             ws_server: Arc::new(ws_server),
             ws_server_rx: Arc::new(RwLock::new(ws_server_rx)),
             clipboard_monitor,
@@ -447,13 +477,17 @@ impl App {
         // 启动 mDNS 监听（使用 spawn_blocking 因为 listen() 是阻塞调用）
         let mdns_for_listen = Arc::clone(&mdns);
         std::thread::spawn(move || {
-            if let Err(e) = mdns_for_listen.listen() {
+            let mdns_guard = mdns_for_listen.blocking_read();
+            if let Err(e) = mdns_guard.listen() {
                 error!("mDNS 监听失败: {}", e);
             }
         });
 
         // 启动 UDP 广播发现（作为 mDNS 的备用方案，避免 macOS 端口 5353 冲突）
-        mdns.start_broadcast_discovery();
+        {
+            let mdns_guard = mdns.read().await;
+            mdns_guard.start_broadcast_discovery();
+        }
 
         // 启动粘贴板监听器（独立任务）
         tokio::spawn(async move {
@@ -529,7 +563,7 @@ impl App {
     ///
     /// 流程：mDNS 发现设备 → 获取设备信息 → WebSocketClient 连接
     async fn handle_device_discovery_task(
-        mdns: Arc<MdnsService>,
+        mdns: Arc<RwLock<MdnsService>>,
         config: AppConfig,
         crypto: Arc<CryptoTransport>,
         clients: Arc<RwLock<HashMap<String, Arc<WebSocketClient>>>>,
@@ -550,19 +584,24 @@ impl App {
             // 同步已连接的设备到 mDNS 设备列表，防止被清理任务删除
             {
                 let clients_read = clients.read().await;
+                let mdns_read = mdns.read().await;
                 for id in clients_read.keys() {
-                    mdns.update_device_heartbeat(id);
+                    mdns_read.update_device_heartbeat(id);
                 }
             }
             {
                 let server_read = server_connected_ids.read().await;
+                let mdns_read = mdns.read().await;
                 for id in server_read.iter() {
-                    mdns.update_device_heartbeat(id);
+                    mdns_read.update_device_heartbeat(id);
                 }
             }
 
             // 获取当前发现的设备列表
-            let devices = mdns.get_devices();
+            let devices = {
+                let mdns_read = mdns.read().await;
+                mdns_read.get_devices()
+            };
             debug!("设备发现周期: 共发现 {} 台设备", devices.len());
 
             for device in devices {
@@ -1110,6 +1149,7 @@ impl App {
     /// 构造 IPC 命令需要的句柄（在 run() 之前调用，提取共享引用）
     pub fn ipc_handles(&self) -> IpcHandles {
         IpcHandles {
+            config: Arc::new(RwLock::new(self.config.clone())),
             identity: Arc::clone(&self.identity),
             mdns: Arc::clone(&self.mdns),
             storage_query_tx: self.storage_query_tx.clone(),
@@ -1122,8 +1162,8 @@ impl App {
 
     /// 获取当前已发现设备列表快照（供 IPC 使用）
     pub async fn get_devices_snapshot(&self) -> Vec<DeviceSnapshot> {
-        self.mdns
-            .get_devices()
+        let mdns = self.mdns.read().await;
+        mdns.get_devices()
             .into_iter()
             .map(DeviceSnapshot::from)
             .collect()

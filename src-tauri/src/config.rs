@@ -15,6 +15,10 @@ pub struct AppConfig {
     /// 设备名称（默认使用计算机名称）
     pub device_name: String,
 
+    /// 自定义设备名称（用户自定义，优先级高于 device_name）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_device_name: Option<String>,
+
     /// WebSocket 监听端口（默认 9527，支持自动降级到 9528-9537）
     pub port: u16,
 
@@ -62,6 +66,7 @@ impl AppConfig {
         let config = AppConfig {
             device_id,
             device_name,
+            custom_device_name: None,
             port: 9527,
             config_path: config_path.clone(),
         };
@@ -94,6 +99,48 @@ impl AppConfig {
     /// 获取设备身份密钥文件路径
     pub fn identity_path(&self) -> PathBuf {
         Self::config_dir().unwrap().join("identity.pem")
+    }
+
+    /// 获取显示用的设备名称（优先使用自定义名称）
+    pub fn display_name(&self) -> &str {
+        self.custom_device_name
+            .as_deref()
+            .unwrap_or(&self.device_name)
+    }
+
+    /// 更新自定义设备名称
+    pub fn set_custom_device_name(&mut self, name: Option<String>) -> anyhow::Result<()> {
+        self.custom_device_name = name;
+        self.save()
+    }
+
+    /// 验证设备名称是否有效
+    pub fn validate_device_name(name: &str) -> Result<(), String> {
+        // 检查是否为空
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err("名称不能为空".to_string());
+        }
+
+        // 检查长度
+        if trimmed.len() > 30 {
+            return Err("名称长度不能超过 30 个字符".to_string());
+        }
+
+        // 检查字符：允许中文、英文、数字、空格、连字符
+        let is_valid = trimmed.chars().all(|c| {
+            c.is_alphanumeric()  // 字母和数字
+                || c == ' '      // 空格
+                || c == '-'      // 连字符
+                || (c >= '\u{4E00}' && c <= '\u{9FFF}')  // CJK 统一汉字
+                || (c >= '\u{3400}' && c <= '\u{4DBF}')  // CJK 扩展 A
+        });
+
+        if !is_valid {
+            return Err("名称只能包含中文、英文、数字、空格和连字符".to_string());
+        }
+
+        Ok(())
     }
 }
 

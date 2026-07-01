@@ -127,7 +127,10 @@ async fn copy_image_to_clipboard(base64_data: String) -> Result<(), String> {
 /// 查询设备列表 IPC 命令
 #[tauri::command]
 async fn get_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
-    let mdns_devices: Vec<DeviceSnapshot> = state.mdns.get_devices().into_iter().map(Into::into).collect();
+    let mdns = state.mdns.read().await;
+    let mdns_devices: Vec<DeviceSnapshot> = mdns.get_devices().into_iter().map(Into::into).collect();
+    drop(mdns); // 释放读锁
+
     let clients = state.clients.read().await;
     let server_ids = state.server_connected_device_ids.read().await;
 
@@ -284,6 +287,39 @@ fn get_console_logs(state: tauri::State<'_, LogBuffer>) -> Result<Vec<LogEntry>,
     Ok(state.snapshot())
 }
 
+/// 获取本机设备 ID（用于前端识别本机设备）
+#[tauri::command]
+async fn get_device_id(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let config = state.config.read().await;
+    Ok(config.device_id.clone())
+}
+
+/// 获取本机设备显示名称（优先使用自定义名称）
+#[tauri::command]
+async fn get_device_name(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let config = state.config.read().await;
+    Ok(config.display_name().to_string())
+}
+
+/// 修改本机自定义设备名称
+#[tauri::command]
+async fn set_device_name(
+    name: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    // 验证名称
+    config::AppConfig::validate_device_name(&name)?;
+
+    // 更新配置
+    let trimmed = name.trim().to_string();
+    state.set_custom_device_name(Some(trimmed))
+        .await
+        .map_err(|e| format!("保存设备名称失败: {}", e))?;
+
+    info!("设备名称已更新为: {}", name.trim());
+    Ok(())
+}
+
 fn main() {
     // 初始化日志系统（同时写内存环形缓存 + stderr）
     let log_buffer: LogBuffer = {
@@ -338,6 +374,9 @@ fn main() {
             approve_pairing,
             reject_pairing,
             get_pending_pairing_requests,
+            get_device_id,
+            get_device_name,
+            set_device_name,
         ])
         .setup(move |app| {
             // 创建系统托盘

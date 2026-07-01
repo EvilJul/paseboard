@@ -610,6 +610,28 @@
 
         /* 配对审批弹窗 */
         .modal-overlay {
+
+        /* 搜索输入框样式 */
+        #search-container {
+            transition: opacity 0.2s ease;
+        }
+
+        #history-search-input {
+            background: #ffffff;
+            border-color: #c4612f;
+            color: #1f2421;
+        }
+
+        #history-search-input:focus {
+            border-color: #c4612f;
+            box-shadow: 0 0 0 2px rgba(196, 97, 47, 0.2);
+        }
+
+        #history-search-input::placeholder {
+            color: #5c635d;
+        }
+
+        /* 配对审批弹窗 */
             position: fixed; top: 0; left: 0;
             width: 100%; height: 100%;
             background: rgba(0, 0, 0, 0.5);
@@ -651,6 +673,25 @@
         <div class="tab-content">
             <!-- 设备列表 -->
             <div id="devices" class="tab-pane active">
+                <!-- 本机设备信息 -->
+                <div id="local-device-info" style="background:#ffffff;border-radius:8px;border:1px solid #e7e1d7;padding:16px;margin-bottom:16px;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;">
+                        <div>
+                            <div style="font-size:13px;color:#5c635d;margin-bottom:4px;">本机设备</div>
+                            <div style="display:flex;align-items:center;gap:8px;">
+                                <span id="local-device-name" style="font-size:16px;font-weight:600;color:#1f2421;cursor:pointer;border-bottom:1px dashed #c4612f;padding-bottom:2px;" title="点击编辑">加载中...</span>
+                            </div>
+                            <div style="font-size:11px;color:#94a3b8;margin-top:4px;">点击设备名称可编辑</div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div style="font-size:12px;color:#5c635d;">设备 ID</div>
+                            <div id="local-device-id" style="font-size:11px;color:#94a3b8;font-family:monospace;">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 其他设备列表 -->
+                <div style="font-size:13px;color:#5c635d;margin-bottom:8px;">局域网设备</div>
                 <div class="table-container">
                     <table>
                         <thead>
@@ -676,7 +717,10 @@
 
             <!-- 历史记录 -->
             <div id="history" class="tab-pane">
-                <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+                <div style="display:flex;justify-content:flex-end;margin-bottom:8px;gap:8px;">
+                    <div id="search-container" style="display:none;flex:1;">
+                        <input type="text" id="history-search-input" placeholder="搜索历史记录 (ESC退出)" style="width:100%;padding:4px 12px;border:1px solid #e7e1d7;border-radius:4px;font-size:13px;outline:none;" />
+                    </div>
                     <button id="clear-history-btn" class="devtools-btn" style="color:#c4612f;font-size:13px;padding:4px 12px;" title="清空全部历史记录">清空全部历史</button>
                 </div>
                 <div class="table-container">
@@ -789,6 +833,49 @@
         // Tauri v2 API
         const invoke = window.__TAURI_INTERNALS__.invoke;
 
+        // 搜索模式状态
+        let searchMode = false;
+        let searchQuery = '';
+
+        // 设备名称编辑状态
+        let localDeviceId = null; // 本机设备 ID
+        let editingDeviceId = null; // 正在编辑的设备 ID
+        let isEditing = false; // 是否正在编辑（防止自动刷新覆盖）
+        let allHistoryItems = []; // 缓存所有历史记录数据
+
+        // 进入搜索模式
+        function enterSearchMode() {
+            searchMode = true;
+            const searchContainer = document.getElementById('search-container');
+            const searchInput = document.getElementById('history-search-input');
+            searchContainer.style.display = 'flex';
+            searchInput.value = '';
+            searchQuery = '';
+            searchInput.focus();
+            // 触发一次空搜索以显示所有记录
+            filterHistory();
+        }
+
+        // 退出搜索模式
+        function exitSearchMode() {
+            searchMode = false;
+            const searchContainer = document.getElementById('search-container');
+            const searchInput = document.getElementById('history-search-input');
+            searchContainer.style.display = 'none';
+            searchInput.value = '';
+            searchQuery = '';
+            // 恢复显示所有记录
+            filterHistory();
+        }
+
+        // 清空搜索状态
+        function clearSearch() {
+            const searchInput = document.getElementById('history-search-input');
+            searchInput.value = '';
+            searchQuery = '';
+            filterHistory();
+        }
+
         // 标签页切换
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -868,24 +955,51 @@
         // 启动期快速重试计数：前 3 次 500ms 探测后端就绪，之后回落到 5000ms 常规轮询
         let _retryCount = 0;
 
+        // 获取本机设备 ID（首次调用时获取并缓存）
+        async function getLocalDeviceId() {
+            if (localDeviceId === null) {
+                try {
+                    localDeviceId = await invoke('get_device_id');
+                } catch (e) {
+                    console.error('获取本机设备 ID 失败:', e);
+                }
+            }
+            return localDeviceId;
+        }
+
         // 加载设备列表（带去重）
         let _lastDevicesHash = '';
         async function loadDevices() {
+            // 如果正在编辑设备名称，跳过刷新
+            if (isEditing) {
+                return;
+            }
+
             const tbody = document.getElementById('devices-tbody');
             const status = document.getElementById('status-text');
+            const localNameEl = document.getElementById('local-device-name');
+            const localIdEl = document.getElementById('local-device-id');
 
             try {
                 const devices = await invoke('get_devices');
+                const localId = await getLocalDeviceId();
+                const localName = await invoke('get_device_name');
 
                 // 首次成功：标记已完成、重置重试计数
                 _initialLoadDone = true;
                 _retryCount = 0;
 
-                // 用设备 id + 连接状态生成指纹
+                // 更新本机设备信息
+                localNameEl.textContent = localName;
+                localIdEl.textContent = localId ? localId.substring(0, 8) + '...' : '未知';
+
+                // 用设备列表生成指纹（不包括本机）
                 const hash = devices.map(d => `${d.id}:${d.is_connected}`).join(',');
                 if (hash === _lastDevicesHash) return;
                 _lastDevicesHash = hash;
-                status.textContent = `已发现 ${devices.length} 台设备`;
+
+                // 统计其他设备数量
+                status.textContent = `已发现 ${devices.length} 台其他设备`;
 
                 if (devices.length === 0) {
                     tbody.innerHTML = `
@@ -893,7 +1007,7 @@
                             <td colspan="3">
                                 <div class="empty-state">
                                     <div class="empty-state-icon">📡</div>
-                                    <div class="empty-state-title">未发现设备</div>
+                                    <div class="empty-state-title">未发现其他设备</div>
                                     <div class="empty-state-desc">局域网内暂时没有其他 PaseBoard 设备</div>
                                 </div>
                             </td>
@@ -904,8 +1018,10 @@
 
                 tbody.innerHTML = devices.map(device => {
                     return `
-                    <tr>
-                        <td>${device.name}</td>
+                    <tr data-device-id="${device.id}">
+                        <td>
+                            <span class="device-name">${escapeHtml(device.name)}</span>
+                        </td>
                         <td data-col="status">
                             <span class="status-dot ${device.is_connected ? 'online' : 'offline'}"></span>
                         </td>
@@ -931,6 +1047,218 @@
                 // 启动期（尚无一次成功）：保留 tbody 原有 spinner，不显示 ❌，
                 // 不在此处置 _initialLoadDone，等首次成功再翻转，避免启动窗口内 ❌ 闪烁
             }
+        }
+
+        // 绑定本机设备名称点击事件（点击进入编辑）
+        document.addEventListener('DOMContentLoaded', () => {
+            const localNameEl = document.getElementById('local-device-name');
+            if (localNameEl) {
+                localNameEl.addEventListener('click', () => {
+                    if (!isEditing) {
+                        startEditingLocalDeviceName();
+                    }
+                });
+            }
+        });
+
+        // 开始编辑本机设备名称（独立版本）
+        function startEditingLocalDeviceName() {
+            const nameEl = document.getElementById('local-device-name');
+            const currentName = nameEl.textContent;
+
+            // 标记正在编辑
+            editingDeviceId = 'local';
+            isEditing = true; // 防止自动刷新覆盖
+
+            // 替换为输入框
+            nameEl.innerHTML = `
+                <input type="text" id="local-device-name-input" value="${escapeHtml(currentName)}" maxlength="30"
+                    style="width:150px;padding:4px 8px;border:1px solid #c4612f;border-radius:4px;font-size:16px;font-weight:600;outline:none;" />
+                <button id="confirm-local-edit-btn" class="devtools-btn" title="确认" style="font-size:14px;padding:4px 8px;margin-left:4px;cursor:pointer;">✓</button>
+                <button id="cancel-local-edit-btn" class="devtools-btn" title="取消" style="font-size:14px;padding:4px 8px;cursor:pointer;">✕</button>
+            `;
+
+            const input = document.getElementById('local-device-name-input');
+            input.focus();
+            input.select();
+
+            // 绑定确认按钮
+            document.getElementById('confirm-local-edit-btn').addEventListener('click', () => {
+                confirmLocalDeviceNameEdit(input.value);
+            });
+
+            // 绑定取消按钮
+            document.getElementById('cancel-local-edit-btn').addEventListener('click', () => {
+                cancelLocalDeviceNameEdit(currentName);
+            });
+
+            // 绑定回车键和 ESC 键
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    confirmLocalDeviceNameEdit(input.value);
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelLocalDeviceNameEdit(currentName);
+                }
+            });
+        }
+
+        // 确认本机设备名称修改
+        async function confirmLocalDeviceNameEdit(newName) {
+            // 前端验证
+            const trimmed = newName.trim();
+            console.log('验证设备名称:', trimmed);
+
+            if (!trimmed) {
+                showToast('名称不能为空', 2000);
+                return;
+            }
+            if (trimmed.length > 30) {
+                showToast('名称长度不能超过 30 个字符', 2000);
+                return;
+            }
+
+            // 简化的验证：只检查是否包含危险字符
+            const hasDangerousChars = /[<>'"&]/.test(trimmed);
+            if (hasDangerousChars) {
+                showToast('名称不能包含 < > \' " & 等特殊字符', 2000);
+                return;
+            }
+
+            console.log('验证通过，调用后端API...');
+
+            try {
+                console.log('调用后端 set_device_name API...');
+                const result = await invoke('set_device_name', { name: trimmed });
+                console.log('API 调用成功，返回:', result);
+                showToast('设备名称已更新');
+
+                // 恢复名称显示（退出编辑模式）
+                const nameEl = document.getElementById('local-device-name');
+                nameEl.textContent = trimmed;
+                nameEl.style.cursor = 'pointer';
+                nameEl.style.borderBottom = '1px dashed #c4612f';
+
+                // 重置编辑状态
+                editingDeviceId = null;
+                isEditing = false;
+                console.log('编辑状态已重置，退出编辑模式');
+
+                // 刷新历史记录（更新来源设备名称显示）
+                _lastHistoryHash = null;
+                loadHistory();
+            } catch (error) {
+                console.error('修改设备名称失败:', error);
+                showToast('修改失败: ' + String(error), 3000);
+                // 出错时也要重置编辑状态
+                isEditing = false;
+            }
+        }
+
+        // 取消本机设备名称修改
+        function cancelLocalDeviceNameEdit(originalName) {
+            const nameEl = document.getElementById('local-device-name');
+            nameEl.textContent = originalName;
+            nameEl.style.cursor = 'pointer';
+            nameEl.style.borderBottom = '1px dashed #c4612f';
+            editingDeviceId = null;
+            isEditing = false; // 重置编辑状态
+        }
+
+        // 开始编辑设备名称（旧版本，保留兼容）
+        function startEditingDeviceName(deviceId) {
+            const row = document.querySelector(`tr[data-device-id="${deviceId}"]`);
+            if (!row) return;
+
+            const nameSpan = row.querySelector('.device-name');
+            const currentName = nameSpan.textContent;
+
+            // 标记正在编辑
+            editingDeviceId = deviceId;
+
+            // 替换为输入框
+            nameSpan.innerHTML = `
+                <input type="text" class="device-name-input" value="${escapeHtml(currentName)}" maxlength="30"
+                    style="width:120px;padding:2px 8px;border:1px solid #c4612f;border-radius:4px;font-size:14px;outline:none;" />
+                <button class="devtools-btn confirm-edit-btn" title="确认" style="font-size:12px;padding:2px 6px;margin-left:4px;">✓</button>
+                <button class="devtools-btn cancel-edit-btn" title="取消" style="font-size:12px;padding:2px 6px;">✕</button>
+            `;
+
+            const input = nameSpan.querySelector('.device-name-input');
+            input.focus();
+            input.select();
+
+            // 绑定确认按钮
+            nameSpan.querySelector('.confirm-edit-btn').addEventListener('click', () => {
+                confirmDeviceNameEdit(deviceId, input.value);
+            });
+
+            // 绑定取消按钮
+            nameSpan.querySelector('.cancel-edit-btn').addEventListener('click', () => {
+                cancelDeviceNameEdit(deviceId, currentName);
+            });
+
+            // 绑定回车键和 ESC 键
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    confirmDeviceNameEdit(deviceId, input.value);
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelDeviceNameEdit(deviceId, currentName);
+                }
+            });
+        }
+
+        // 确认设备名称修改
+        async function confirmDeviceNameEdit(deviceId, newName) {
+            // 前端验证
+            const trimmed = newName.trim();
+            if (!trimmed) {
+                showToast('名称不能为空', 2000);
+                return;
+            }
+            if (trimmed.length > 30) {
+                showToast('名称长度不能超过 30 个字符', 2000);
+                return;
+            }
+            const isValid = /^[一-鿿㐀-䶿a-zA-Z0-9 \-]+$/.test(trimmed);
+            if (!isValid) {
+                showToast('名称只能包含中文、英文、数字、空格和连字符', 2000);
+                return;
+            }
+
+            try {
+                await invoke('set_device_name', { name: trimmed });
+                showToast('设备名称已更新');
+
+                // 更新显示
+                const row = document.querySelector(`tr[data-device-id="${deviceId}"]`);
+                if (row) {
+                    const nameSpan = row.querySelector('.device-name');
+                    nameSpan.textContent = trimmed;
+                }
+
+                editingDeviceId = null;
+
+                // 刷新历史记录（更新来源设备名称显示）
+                _lastHistoryHash = null;
+                loadHistory();
+            } catch (error) {
+                console.error('修改设备名称失败:', error);
+                showToast('修改失败: ' + error, 3000);
+            }
+        }
+
+        // 取消设备名称修改
+        function cancelDeviceNameEdit(deviceId, originalName) {
+            const row = document.querySelector(`tr[data-device-id="${deviceId}"]`);
+            if (row) {
+                const nameSpan = row.querySelector('.device-name');
+                nameSpan.textContent = originalName;
+            }
+            editingDeviceId = null;
         }
 
         // 加载历史记录（带去重：仅数据变化时重渲染，避免闪烁）
@@ -1078,6 +1406,10 @@
                 loadDevices();
             } else if (activeTab === 'history') {
                 loadHistory();
+                // 如果在搜索模式下，自动过滤
+                if (searchMode && searchQuery) {
+                    requestAnimationFrame(() => filterHistory());
+                }
             }
 
             // 启动期：累加重试次数，达到阈值后切换到常规轮询周期
@@ -1110,6 +1442,47 @@
         window.copyToClipboard = copyToClipboard;
         window.escapeHtml = escapeHtml;
         window.copyLogText = copyLogText;
+
+        // 搜索输入框事件监听
+        document.getElementById('history-search-input').addEventListener('input', (e) => {
+            searchQuery = e.target.value;
+            requestAnimationFrame(() => filterHistory());
+        });
+
+        // 搜索框失去焦点时，如果不在搜索模式则隐藏
+        document.getElementById('history-search-input').addEventListener('blur', () => {
+            // 延迟检查，避免点击搜索框内其他元素时立即隐藏
+            setTimeout(() => {
+                if (!searchMode) {
+                    document.getElementById('search-container').style.display = 'none';
+                }
+            }, 100);
+        });
+
+        // 过滤历史记录
+        function filterHistory() {
+            const tbody = document.getElementById('history-tbody');
+            const rows = tbody.querySelectorAll('tr[data-content]');
+
+            rows.forEach(row => {
+                if (!searchQuery) {
+                    // 没有搜索词，显示所有
+                    row.style.display = '';
+                } else {
+                    // 跳过图片类型记录
+                    const contentType = row.dataset.type;
+                    if (contentType === 'image') {
+                        row.style.display = 'none';
+                        return;
+                    }
+
+                    // 不区分大小写的子字符串匹配（仅文本）
+                    const content = row.dataset.content || '';
+                    const matches = content.toLowerCase().includes(searchQuery.toLowerCase());
+                    row.style.display = matches ? '' : 'none';
+                }
+            });
+        }
 
         let consoleLogs = [];
         let consoleVisible = false;
@@ -1254,6 +1627,31 @@
                     e.preventDefault();
                     const currentMode = localStorage.getItem('paseboard:devMode') === 'true';
                     updateDevModeUI(!currentMode);
+                }
+
+                // 搜索模式快捷键
+                const activeTab = document.querySelector('.tab-btn.active').getAttribute('data-tab');
+
+                // 在历史记录标签页，非搜索模式下按 / 进入搜索模式
+                if (!searchMode && activeTab === 'history' && e.key === '/' && !e.ctrlKey && !e.metaKey) {
+                    e.preventDefault();
+                    enterSearchMode();
+                    return;
+                }
+
+                // 在搜索模式下按 ESC 退出搜索模式
+                if (searchMode && e.key === 'Escape') {
+                    e.preventDefault();
+                    exitSearchMode();
+                    return;
+                }
+
+                // 在搜索模式下，确保输入框保持焦点（排除特殊按键）
+                if (searchMode && !e.ctrlKey && !e.metaKey && !e.altKey && e.key !== 'Escape') {
+                    const searchInput = document.getElementById('history-search-input');
+                    if (document.activeElement !== searchInput) {
+                        searchInput.focus();
+                    }
                 }
             });
         })();
@@ -1484,12 +1882,10 @@
                 }
             }
 
-            // 页面加载完成后检查待处理的配对请求
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', checkPendingPairingRequests);
-            } else {
-                checkPendingPairingRequests();
-            }
+            // 页面加载后延迟检查待处理的配对请求
+            // 需要等待后端异步初始化完成（app_handle.manage() 在独立线程中执行）
+            // 延迟 1 秒确保 Tauri 状态已注册
+            setTimeout(checkPendingPairingRequests, 1000);
         })();
     </script>
 </body>

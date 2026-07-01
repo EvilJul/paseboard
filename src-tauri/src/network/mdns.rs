@@ -371,6 +371,29 @@ impl MdnsService {
         self.port
     }
 
+    /// 更新设备名称并重新广播
+    ///
+    /// 当用户修改设备名称后调用此方法，会立即重新注册 mDNS 服务，
+    /// 使其他设备在下一次轮询时能收到新的设备名称。
+    pub fn update_device_name(&mut self, new_name: String) -> Result<(), NetworkError> {
+        log::info!("更新 mDNS 设备名称: {} -> {}", self.device_name, new_name);
+
+        // 先注销旧的服务（使用旧的设备名称）
+        let old_service_name = format!("{}.{}", self.device_name, SERVICE_TYPE);
+        if let Err(e) = self.daemon.unregister(&old_service_name) {
+            log::warn!("注销旧 mDNS 服务失败（可能未注册）: {}", e);
+        }
+
+        // 更新设备名称
+        self.device_name = new_name;
+
+        // 重新注册服务（使用新的设备名称）
+        self.register()?;
+
+        log::info!("✓ mDNS 设备名称更新完成，已重新广播");
+        Ok(())
+    }
+
     /// 更新设备心跳时间（用于维持在线状态）
     pub fn update_device_heartbeat(&self, device_id: &str) {
         let mut devices = self.devices.lock().unwrap();
