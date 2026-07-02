@@ -273,12 +273,20 @@ impl MdnsService {
                     }
                     mdns_sd::ServiceEvent::ServiceRemoved(_, full_name) => {
                         log::info!("设备离线: {}", full_name);
-                        
+
+                        // 从 full_name 中提取编码后的设备名称前缀，解码后与设备列表匹配。
+                        // full_name 格式："<编码名称>._paseboard._tcp.local."
+                        // dev.name 是解码后的原始名称（如"浮生"）
+                        let removed_name = full_name
+                            .strip_suffix(SERVICE_TYPE)
+                            .or_else(|| full_name.strip_suffix(SERVICE_TYPE.strip_suffix('.').unwrap_or(SERVICE_TYPE)))
+                            .map(|n| n.strip_suffix('.').unwrap_or(n))
+                            .unwrap_or(&full_name);
+                        let decoded_removed_name = Self::decode_mdns_name(removed_name);
+
                         // 设备离线：从列表中移除
                         let mut devices = devices.lock().unwrap();
-                        devices.retain(|_, dev| {
-                            format!("{}.{}", dev.name, SERVICE_TYPE) != full_name
-                        });
+                        devices.retain(|_, dev| dev.name != decoded_removed_name);
                     }
                     _ => {
                         log::trace!("mDNS 其他事件: {:?}", event);
