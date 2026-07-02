@@ -318,6 +318,8 @@ impl MdnsService {
             .map(|n| n.strip_suffix('.').unwrap_or(n))
             .unwrap_or(&fullname)
             .to_string();
+        // 解码 percent-encoded 的设备名称（中文等非 ASCII 字符）
+        let device_name = Self::decode_mdns_name(&device_name);
 
         // 获取 IP 地址（过滤 loopback，优先选择非回环的 IPv4）
         let addresses = info.get_addresses();
@@ -418,6 +420,32 @@ impl MdnsService {
         }
         log::info!("mDNS 名称编码: {} -> {}", name, encoded);
         encoded
+    }
+
+    /// 解码 percent-encoded 的 mDNS 设备名称
+    ///
+    /// 将 %XX 形式的编码还原为原始 UTF-8 字符。
+    fn decode_mdns_name(encoded: &str) -> String {
+        if !encoded.contains('%') {
+            return encoded.to_string();
+        }
+        let mut decoded = Vec::with_capacity(encoded.len());
+        let bytes = encoded.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                if let Ok(byte) = u8::from_str_radix(
+                    std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("00"), 16,
+                ) {
+                    decoded.push(byte);
+                    i += 3;
+                    continue;
+                }
+            }
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+        String::from_utf8(decoded).unwrap_or_else(|_| encoded.to_string())
     }
 
     /// 更新设备心跳时间（用于维持在线状态）
@@ -577,6 +605,8 @@ impl MdnsService {
                         .and_then(|v| v.as_str())
                         .unwrap_or("Unknown")
                         .to_string();
+                    // 解码 percent-encoded 的设备名称
+                    let name = Self::decode_mdns_name(&name);
                     let addr_str = parsed.get("addr").and_then(|v| v.as_str()).unwrap_or("");
                     let remote_port = parsed.get("port").and_then(|v| v.as_u64()).unwrap_or(9527) as u16;
                     let public_key = parsed.get("public_key").and_then(|v| v.as_str()).map(|s| s.to_string());

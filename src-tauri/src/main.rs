@@ -299,7 +299,7 @@ async fn get_device_id(state: tauri::State<'_, AppState>) -> Result<String, Stri
 async fn get_device_name(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let config = state.config.read().await;
     let name = config.display_name().to_string();
-    log::debug!("get_device_name: device_name={}, custom_device_name={:?}, display={}",
+    log::info!("[get_device_name] device_name={}, custom={:?}, display={}",
         config.device_name, config.custom_device_name, name);
     Ok(name)
 }

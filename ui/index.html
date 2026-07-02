@@ -991,7 +991,10 @@
                 _retryCount = 0;
 
                 // 更新本机设备信息
-                localNameEl.textContent = localName;
+                console.log('[loadDevices] 更新本机名称:', localName, '元素:', localNameEl ? '存在' : '不存在');
+                if (localNameEl) {
+                    localNameEl.textContent = localName;
+                }
                 localIdEl.textContent = localId ? localId.substring(0, 8) + '...' : '未知';
 
                 // 用设备列表生成指纹（不包括本机）
