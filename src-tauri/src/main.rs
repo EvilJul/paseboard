@@ -298,7 +298,10 @@ async fn get_device_id(state: tauri::State<'_, AppState>) -> Result<String, Stri
 #[tauri::command]
 async fn get_device_name(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let config = state.config.read().await;
-    Ok(config.display_name().to_string())
+    let name = config.display_name().to_string();
+    log::debug!("get_device_name: device_name={}, custom_device_name={:?}, display={}",
+        config.device_name, config.custom_device_name, name);
+    Ok(name)
 }
 
 /// 修改本机自定义设备名称
@@ -337,8 +340,8 @@ fn main() {
     let config = match AppConfig::load() {
         Ok(cfg) => {
             info!(
-                "配置加载成功: 设备 ID = {}, 设备名称 = {}, 端口 = {}",
-                cfg.device_id, cfg.device_name, cfg.port
+                "配置加载成功: 设备 ID = {}, 设备名称 = {}, 自定义名称 = {:?}, 端口 = {}",
+                cfg.device_id, cfg.device_name, cfg.custom_device_name, cfg.port
             );
             cfg
         }

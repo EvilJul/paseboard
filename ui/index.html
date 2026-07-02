@@ -984,6 +984,7 @@
                 const devices = await invoke('get_devices');
                 const localId = await getLocalDeviceId();
                 const localName = await invoke('get_device_name');
+                console.log('[loadDevices] get_device_name 返回:', localName);
 
                 // 首次成功：标记已完成、重置重试计数
                 _initialLoadDone = true;

@@ -116,7 +116,7 @@ impl MdnsService {
         Ok(Self {
             daemon,
             device_id,
-            device_name,
+            device_name: Self::encode_mdns_name(&device_name),
             port: bind_port,
             devices: Arc::new(Mutex::new(HashMap::new())),
             public_key_base64,
@@ -375,6 +375,9 @@ impl MdnsService {
     ///
     /// 当用户修改设备名称后调用此方法，会立即重新注册 mDNS 服务，
     /// 使其他设备在下一次轮询时能收到新的设备名称。
+    ///
+    /// 注意：mDNS 服务名必须是 ASCII 安全的，中文字符会导致 mdns-sd 解析器 panic。
+    /// 因此对非 ASCII 名称进行 percent-encoding 编码。
     pub fn update_device_name(&mut self, new_name: String) -> Result<(), NetworkError> {
         log::info!("更新 mDNS 设备名称: {} -> {}", self.device_name, new_name);
 
@@ -384,14 +387,37 @@ impl MdnsService {
             log::warn!("注销旧 mDNS 服务失败（可能未注册）: {}", e);
         }
 
-        // 更新设备名称
-        self.device_name = new_name;
+        // 更新设备名称（使用 ASCII 安全的编码名称用于 mDNS 广播）
+        self.device_name = Self::encode_mdns_name(&new_name);
 
         // 重新注册服务（使用新的设备名称）
         self.register()?;
 
-        log::info!("✓ mDNS 设备名称更新完成，已重新广播");
+        log::info!("✓ mDNS 设备名称更新完成，已重新广播（编码名: {}）", self.device_name);
         Ok(())
+    }
+
+    /// 将设备名称编码为 mDNS 安全的 ASCII 名称
+    ///
+    /// mdns-sd 的 DNS 解析器不支持非 ASCII 字符（中文等会导致 panic）。
+    /// 使用 percent-encoding 将非 ASCII 字符编码为 %XX 形式。
+    fn encode_mdns_name(name: &str) -> String {
+        if name.is_ascii() {
+            return name.to_string();
+        }
+        let mut encoded = String::with_capacity(name.len() * 3);
+        for byte in name.bytes() {
+            if byte.is_ascii_graphic() || byte == b'-' || byte == b'.' {
+                encoded.push(byte as char);
+            } else if byte == b' ' {
+                encoded.push('-'); // 空格替换为连字符
+            } else {
+                encoded.push('%');
+                encoded.push_str(&format!("{:02X}", byte));
+            }
+        }
+        log::info!("mDNS 名称编码: {} -> {}", name, encoded);
+        encoded
     }
 
     /// 更新设备心跳时间（用于维持在线状态）
