@@ -998,7 +998,7 @@
                 localIdEl.textContent = localId ? localId.substring(0, 8) + '...' : '未知';
 
                 // 用设备列表生成指纹（不包括本机）
-                const hash = devices.map(d => `${d.id}:${d.is_connected}`).join(',');
+                const hash = devices.map(d => `${d.id}:${d.name}:${d.is_connected}`).join(',');
                 if (hash === _lastDevicesHash) return;
                 _lastDevicesHash = hash;
 

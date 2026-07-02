@@ -53,6 +53,8 @@ pub struct DeviceInfo {
     pub public_key: Option<String>,
     /// 加密协议版本（"0"=未加密, "1"=AES-256-GCM+ECDH）
     pub crypto_version: String,
+    /// mDNS 服务完整名称（用于 ServiceRemoved 精确匹配，避免竞态误删）
+    pub full_name: String,
 }
 
 impl DeviceInfo {
@@ -86,6 +88,8 @@ pub struct MdnsService {
     public_key_base64: Option<String>,
     /// 本设备加密协议版本（用于 TXT 广播兼容性检测）
     crypto_version: String,
+    /// 共享的设备名称（用于 UDP 广播线程读取最新值）
+    broadcast_device_name: Arc<std::sync::RwLock<String>>,
 }
 
 impl MdnsService {
@@ -113,14 +117,16 @@ impl MdnsService {
             NetworkError::ConnectionFailed(format!("mDNS 初始化失败: {}", e))
         })?;
 
+        let encoded_name = Self::encode_mdns_name(&device_name);
         Ok(Self {
             daemon,
             device_id,
-            device_name: Self::encode_mdns_name(&device_name),
+            device_name: encoded_name.clone(),
             port: bind_port,
             devices: Arc::new(Mutex::new(HashMap::new())),
             public_key_base64,
             crypto_version,
+            broadcast_device_name: Arc::new(std::sync::RwLock::new(encoded_name)),
         })
     }
 
@@ -274,19 +280,9 @@ impl MdnsService {
                     mdns_sd::ServiceEvent::ServiceRemoved(_, full_name) => {
                         log::info!("设备离线: {}", full_name);
 
-                        // 从 full_name 中提取编码后的设备名称前缀，解码后与设备列表匹配。
-                        // full_name 格式："<编码名称>._paseboard._tcp.local."
-                        // dev.name 是解码后的原始名称（如"浮生"）
-                        let removed_name = full_name
-                            .strip_suffix(SERVICE_TYPE)
-                            .or_else(|| full_name.strip_suffix(SERVICE_TYPE.strip_suffix('.').unwrap_or(SERVICE_TYPE)))
-                            .map(|n| n.strip_suffix('.').unwrap_or(n))
-                            .unwrap_or(&full_name);
-                        let decoded_removed_name = Self::decode_mdns_name(removed_name);
-
-                        // 设备离线：从列表中移除
+                        // 按 full_name 精确匹配删除（避免竞态条件误删新条目）
                         let mut devices = devices.lock().unwrap();
-                        devices.retain(|_, dev| dev.name != decoded_removed_name);
+                        devices.retain(|_, dev| dev.full_name != full_name);
                     }
                     _ => {
                         log::trace!("mDNS 其他事件: {:?}", event);
@@ -359,6 +355,9 @@ impl MdnsService {
             .unwrap()
             .as_secs();
 
+        // 获取完整 mDNS 服务名称（用于 ServiceRemoved 精确匹配）
+        let full_name_raw = info.get_fullname().to_string();
+
         Some(DeviceInfo {
             id: device_id,
             name: device_name,
@@ -367,6 +366,7 @@ impl MdnsService {
             last_seen,
             public_key,
             crypto_version,
+            full_name: full_name_raw,
         })
     }
 
@@ -399,6 +399,11 @@ impl MdnsService {
 
         // 更新设备名称（使用 ASCII 安全的编码名称用于 mDNS 广播）
         self.device_name = Self::encode_mdns_name(&new_name);
+
+        // 更新共享的广播名称（让 UDP 广播线程读取最新值）
+        if let Ok(mut name) = self.broadcast_device_name.write() {
+            *name = self.device_name.clone();
+        }
 
         // 重新注册服务（使用新的设备名称）
         self.register()?;
@@ -484,7 +489,7 @@ impl MdnsService {
 
         let send_devices = Arc::clone(&self.devices);
         let send_id = self.device_id.clone();
-        let send_name = self.device_name.clone();
+        let send_name = Arc::clone(&self.broadcast_device_name);
         let send_port = self.port;
         let send_ip = local_ip.clone();
         let send_crypto_version = self.crypto_version.clone();
@@ -506,7 +511,7 @@ impl MdnsService {
     fn udp_broadcast_sender_loop(
         _devices: Arc<Mutex<HashMap<String, DeviceInfo>>>,
         device_id: String,
-        device_name: String,
+        device_name: Arc<std::sync::RwLock<String>>,
         port: u16,
         local_ip: &str,
         crypto_version: String,
@@ -524,28 +529,30 @@ impl MdnsService {
             return;
         }
 
-        let msg = serde_json::json!({
-            "type": "paseboard_discovery",
-            "device_id": device_id,
-            "device_name": device_name,
-            "addr": local_ip,
-            "port": port,
-            "crypto_version": crypto_version,
-            "public_key": public_key_base64,
-        });
-        let payload = match serde_json::to_string(&msg) {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("UDP 广播序列化失败: {}", e);
-                return;
-            }
-        };
-
         let dest = format!("255.255.255.255:{}", BROADCAST_PORT);
-
         log::info!("UDP 广播目标: {} (本机 IP: {})", dest, local_ip);
 
         loop {
+            // 每次发送时读取最新的设备名称
+            let current_name = device_name.read().unwrap().clone();
+            let msg = serde_json::json!({
+                "type": "paseboard_discovery",
+                "device_id": device_id,
+                "device_name": current_name,
+                "addr": local_ip,
+                "port": port,
+                "crypto_version": crypto_version,
+                "public_key": public_key_base64,
+            });
+            let payload = match serde_json::to_string(&msg) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::error!("UDP 广播序列化失败: {}", e);
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    continue;
+                }
+            };
+
             if let Err(e) = socket.send_to(payload.as_bytes(), &dest) {
                 log::warn!("UDP 广播发送失败: {}", e);
             }
@@ -639,6 +646,7 @@ impl MdnsService {
                             last_seen,
                             public_key,
                             crypto_version,
+                            full_name: String::new(), // UDP 广播无 mDNS full_name
                         });
                     }
                 }
@@ -688,6 +696,7 @@ mod tests {
                 .as_secs(),
             public_key: None,
             crypto_version: "1".to_string(),
+            full_name: "Test Device._paseboard._tcp.local.".to_string(),
         };
 
         // 新设备应该在线
@@ -709,6 +718,7 @@ mod tests {
             last_seen: 0,
             public_key: None,
             crypto_version: "1".to_string(),
+            full_name: "Compatible Device._paseboard._tcp.local.".to_string(),
         };
         assert!(compatible.is_compatible());
 
@@ -721,6 +731,7 @@ mod tests {
             last_seen: 0,
             public_key: None,
             crypto_version: "0".to_string(),
+            full_name: "Incompatible Device._paseboard._tcp.local.".to_string(),
         };
         assert!(!incompatible.is_compatible());
     }
@@ -771,6 +782,7 @@ mod tests {
                             .as_secs(),
                         public_key: None,
                         crypto_version: "1".to_string(),
+                        full_name: "Remote Device 1._paseboard._tcp.local.".to_string(),
                     },
                 );
             }
