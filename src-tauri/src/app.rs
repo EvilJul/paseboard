@@ -251,7 +251,7 @@ impl App {
         // 并行初始化三个独立模块：mDNS（带公钥）、WebSocket Server、Storage
         let mdns_handle = {
             let device_id = device_id.clone();
-            let device_name = config.device_name.clone();
+            let device_name = config.display_name().to_string();
             let port = config.port;
             let public_key_b64 = Some(identity.public_key_base64());
             tokio::spawn(async move {
